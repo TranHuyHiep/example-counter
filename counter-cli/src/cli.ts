@@ -18,7 +18,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import { createInterface, type Interface } from 'node:readline/promises';
 import { type Logger } from 'pino';
 import { type StartedDockerComposeEnvironment, type DockerComposeEnvironment } from 'testcontainers';
-import { type CounterProviders, type DeployedCounterContract } from './common-types';
+import { type MintProviders, type DeployedMintContract } from './common-types';
 import { type Config, StandaloneConfig } from './config';
 import * as api from './api';
 
@@ -35,9 +35,9 @@ const GENESIS_MINT_WALLET_SEED = '0000000000000000000000000000000000000000000000
 const BANNER = `
 ╔══════════════════════════════════════════════════════════════╗
 ║                                                              ║
-║              Midnight Counter Example                        ║
-║              ─────────────────────                           ║
-║              A privacy-preserving smart contract demo        ║
+║              Midnight Token Mint Example                     ║
+║              ───────────────────────────                     ║
+║              A privacy-preserving token minting demo         ║
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝
 `;
@@ -50,9 +50,11 @@ const WALLET_MENU = `
 ${DIVIDER}
   Wallet Setup
 ${DIVIDER}
-  [1] Create a new wallet
-  [2] Restore wallet from seed
-  [3] Exit
+  [1] Create a new wallet (random seed)
+  [2] Create a new wallet with 24-word mnemonic
+  [3] Restore wallet from 24-word mnemonic
+  [4] Restore wallet from seed (hex)
+  [5] Exit
 ${'─'.repeat(62)}
 > `;
 
@@ -61,20 +63,20 @@ const contractMenu = (dustBalance: string) => `
 ${DIVIDER}
   Contract Actions${dustBalance ? `                    DUST: ${dustBalance}` : ''}
 ${DIVIDER}
-  [1] Deploy a new counter contract
-  [2] Join an existing counter contract
+  [1] Deploy a new mint contract
+  [2] Join an existing mint contract
   [3] Monitor DUST balance
   [4] Exit
 ${'─'.repeat(62)}
 > `;
 
-/** Build the counter actions menu, showing current DUST balance in the header. */
-const counterMenu = (dustBalance: string) => `
+/** Build the mint actions menu, showing current DUST balance in the header. */
+const mintMenu = (dustBalance: string) => `
 ${DIVIDER}
-  Counter Actions${dustBalance ? `                     DUST: ${dustBalance}` : ''}
+  Mint Actions${dustBalance ? `                        DUST: ${dustBalance}` : ''}
 ${DIVIDER}
-  [1] Increment counter
-  [2] Display current counter value
+  [1] Mint X tokens
+  [2] Mint Y tokens
   [3] Exit
 ${'─'.repeat(62)}
 > `;
@@ -83,8 +85,15 @@ ${'─'.repeat(62)}
 
 /** Prompt the user for a seed phrase and restore a wallet from it. */
 const buildWalletFromSeed = async (config: Config, rli: Interface): Promise<WalletContext> => {
-  const seed = await rli.question('Enter your wallet seed: ');
+  const seed = await rli.question('Enter your wallet seed (hex): ');
   return await api.buildWalletAndWaitForFunds(config, seed);
+};
+
+/** Prompt the user for a 24-word mnemonic and restore a wallet from it. */
+const buildWalletFromMnemonic = async (config: Config, rli: Interface): Promise<WalletContext> => {
+  console.log('\nEnter your 24-word mnemonic phrase (space-separated):');
+  const mnemonic = await rli.question('> ');
+  return await api.buildWalletFromMnemonic(config, mnemonic.trim());
 };
 
 /**
@@ -104,8 +113,12 @@ const buildWallet = async (config: Config, rli: Interface): Promise<WalletContex
       case '1':
         return await api.buildFreshWallet(config);
       case '2':
-        return await buildWalletFromSeed(config, rli);
+        return await api.buildFreshWalletWithMnemonic(config);
       case '3':
+        return await buildWalletFromMnemonic(config, rli);
+      case '4':
+        return await buildWalletFromSeed(config, rli);
+      case '5':
         return null;
       default:
         logger.error(`Invalid choice: ${choice}`);
@@ -126,7 +139,7 @@ const getDustLabel = async (wallet: api.WalletContext['wallet']): Promise<string
 };
 
 /** Prompt for a contract address and join an existing deployed contract. */
-const joinContract = async (providers: CounterProviders, rli: Interface): Promise<DeployedCounterContract> => {
+const joinContract = async (providers: MintProviders, rli: Interface): Promise<DeployedMintContract> => {
   const contractAddress = await rli.question('Enter the contract address (hex): ');
   return await api.joinContract(providers, contractAddress);
 };
@@ -148,18 +161,18 @@ const startDustMonitor = async (wallet: api.WalletContext['wallet'], rli: Interf
  * Errors during deploy/join are caught and displayed — the user stays in the menu.
  */
 const deployOrJoin = async (
-  providers: CounterProviders,
+  providers: MintProviders,
   walletCtx: api.WalletContext,
   rli: Interface,
-): Promise<DeployedCounterContract | null> => {
+): Promise<DeployedMintContract | null> => {
   while (true) {
     const dustLabel = await getDustLabel(walletCtx.wallet);
     const choice = await rli.question(contractMenu(dustLabel));
     switch (choice.trim()) {
       case '1':
         try {
-          const contract = await api.withStatus('Deploying counter contract', () =>
-            api.deploy(providers, { privateCounter: 0 }),
+          const contract = await api.withStatus('Deploying mint contract', () =>
+            api.deploy(providers, {}),
           );
           console.log(`  Contract deployed at: ${contract.deployTxData.public.contractAddress}\n`);
           return contract;
@@ -207,28 +220,45 @@ const deployOrJoin = async (
 
 /**
  * Main interaction loop. Once a contract is deployed/joined, the user
- * can increment the counter or query its current value.
+ * can mint tokens X or Y.
  */
-const mainLoop = async (providers: CounterProviders, walletCtx: api.WalletContext, rli: Interface): Promise<void> => {
-  const counterContract = await deployOrJoin(providers, walletCtx, rli);
-  if (counterContract === null) {
+const mainLoop = async (providers: MintProviders, walletCtx: api.WalletContext, rli: Interface): Promise<void> => {
+  const mintContract = await deployOrJoin(providers, walletCtx, rli);
+  if (mintContract === null) {
     return;
   }
 
+  // Get wallet address bytes for minting
+  const walletAddressBytes = await api.getUnshieldedAddressBytes(walletCtx.wallet);
+  logger.info(`Using wallet address: ${Buffer.from(walletAddressBytes).toString('hex')}`);
+
   while (true) {
     const dustLabel = await getDustLabel(walletCtx.wallet);
-    const choice = await rli.question(counterMenu(dustLabel));
+    const choice = await rli.question(mintMenu(dustLabel));
     switch (choice.trim()) {
       case '1':
         try {
-          await api.withStatus('Incrementing counter', () => api.increment(counterContract));
+          const amount = await rli.question('Enter amount of X tokens to mint: ');
+          await api.withStatus('Minting X tokens', () => 
+            api.mintTokensX(mintContract, BigInt(amount), walletAddressBytes)
+          );
+          console.log(`  ✓ Minted ${amount} X tokens\n`);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          console.log(`  ✗ Increment failed: ${msg}\n`);
+          console.log(`  ✗ Mint X tokens failed: ${msg}\n`);
         }
         break;
       case '2':
-        await api.displayCounterValue(providers, counterContract);
+        try {
+          const amount = await rli.question('Enter amount of Y tokens to mint: ');
+          await api.withStatus('Minting Y tokens', () => 
+            api.mintTokensY(mintContract, BigInt(amount), walletAddressBytes)
+          );
+          console.log(`  ✓ Minted ${amount} Y tokens\n`);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.log(`  ✗ Mint Y tokens failed: ${msg}\n`);
+        }
         break;
       case '3':
         return;

@@ -13,17 +13,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Counter, type CounterPrivateState } from '@midnight-ntwrk/counter-contract';
+import { Mint, type MintPrivateState } from '@midnight-ntwrk/counter-contract';
 import type { MidnightProviders } from '@midnight-ntwrk/midnight-js-types';
 import type { DeployedContract, FoundContract } from '@midnight-ntwrk/midnight-js-contracts';
 import type { ImpureCircuitId } from '@midnight-ntwrk/compact-js';
 
-export type CounterCircuits = ImpureCircuitId<Counter.Contract<CounterPrivateState>>;
+export type MintCircuits = ImpureCircuitId<Mint.Contract<MintPrivateState>>;
 
-export const CounterPrivateStateId = 'counterPrivateState';
+export const MintPrivateStateId = 'mintPrivateState';
 
-export type CounterProviders = MidnightProviders<CounterCircuits, typeof CounterPrivateStateId, CounterPrivateState>;
+export type MintProviders = MidnightProviders<MintCircuits, typeof MintPrivateStateId, MintPrivateState>;
 
-export type CounterContract = Counter.Contract<CounterPrivateState>;
+export type MintContract = Mint.Contract<MintPrivateState>;
 
-export type DeployedCounterContract = DeployedContract<CounterContract> | FoundContract<CounterContract>;
+export type DeployedMintContract = DeployedContract<MintContract> | FoundContract<MintContract>;

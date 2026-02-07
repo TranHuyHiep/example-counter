@@ -16,7 +16,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 import { type ContractAddress } from '@midnight-ntwrk/compact-runtime';
-import { Counter, type CounterPrivateState, witnesses } from '@midnight-ntwrk/counter-contract';
+import { Mint, type MintPrivateState, witnesses } from '@midnight-ntwrk/counter-contract';
 import * as ledger from '@midnight-ntwrk/ledger-v7';
 import { unshieldedToken } from '@midnight-ntwrk/ledger-v7';
 import { deployContract, findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
@@ -39,11 +39,11 @@ import { type Logger } from 'pino';
 import * as Rx from 'rxjs';
 import { WebSocket } from 'ws';
 import {
-  type CounterCircuits,
-  type CounterContract,
-  type CounterPrivateStateId,
-  type CounterProviders,
-  type DeployedCounterContract,
+  type MintCircuits,
+  type MintContract,
+  type MintPrivateStateId,
+  type MintProviders,
+  type DeployedMintContract,
 } from './common-types';
 import { type Config, contractConfig } from './config';
 import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-private-state-provider';
@@ -51,6 +51,7 @@ import { assertIsContractAddress, toHex } from '@midnight-ntwrk/midnight-js-util
 import { getNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
 import { CompiledContract } from '@midnight-ntwrk/compact-js';
 import { Buffer } from 'buffer';
+import * as bip39 from 'bip39';
 import {
   MidnightBech32m,
   ShieldedAddress,
@@ -64,8 +65,8 @@ let logger: Logger;
 // @ts-expect-error: It's needed to enable WebSocket usage through apollo
 globalThis.WebSocket = WebSocket;
 
-// Pre-compile the counter contract with ZK circuit assets
-const counterCompiledContract = CompiledContract.make('counter', Counter.Contract).pipe(
+// Pre-compile the mint contract with ZK circuit assets
+const mintCompiledContract = CompiledContract.make('mint', Mint.Contract).pipe(
   CompiledContract.withVacantWitnesses,
   CompiledContract.withCompiledFileAssets(contractConfig.zkConfigPath),
 );
@@ -77,68 +78,93 @@ export interface WalletContext {
   unshieldedKeystore: UnshieldedKeystore;
 }
 
-export const getCounterLedgerState = async (
-  providers: CounterProviders,
-  contractAddress: ContractAddress,
-): Promise<bigint | null> => {
-  assertIsContractAddress(contractAddress);
-  logger.info('Checking contract ledger state...');
-  const state = await providers.publicDataProvider
-    .queryContractState(contractAddress)
-    .then((contractState) => (contractState != null ? Counter.ledger(contractState.data).round : null));
-  logger.info(`Ledger state: ${state}`);
-  return state;
-};
-
-export const counterContractInstance: CounterContract = new Counter.Contract(witnesses);
+export const mintContractInstance: MintContract = new Mint.Contract(witnesses);
 
 export const joinContract = async (
-  providers: CounterProviders,
+  providers: MintProviders,
   contractAddress: string,
-): Promise<DeployedCounterContract> => {
-  const counterContract = await findDeployedContract(providers, {
+): Promise<DeployedMintContract> => {
+  const mintContract = await findDeployedContract(providers, {
     contractAddress,
-    compiledContract: counterCompiledContract,
-    privateStateId: 'counterPrivateState',
-    initialPrivateState: { privateCounter: 0 },
+    compiledContract: mintCompiledContract,
+    privateStateId: 'mintPrivateState',
+    initialPrivateState: {},
   });
-  logger.info(`Joined contract at address: ${counterContract.deployTxData.public.contractAddress}`);
-  return counterContract;
+  logger.info(`Joined contract at address: ${mintContract.deployTxData.public.contractAddress}`);
+  return mintContract;
 };
 
 export const deploy = async (
-  providers: CounterProviders,
-  privateState: CounterPrivateState,
-): Promise<DeployedCounterContract> => {
-  logger.info('Deploying counter contract...');
-  const counterContract = await deployContract(providers, {
-    compiledContract: counterCompiledContract,
-    privateStateId: 'counterPrivateState',
+  providers: MintProviders,
+  privateState: MintPrivateState,
+): Promise<DeployedMintContract> => {
+  logger.info('Deploying mint contract...');
+  const mintContract = await deployContract(providers, {
+    compiledContract: mintCompiledContract,
+    privateStateId: 'mintPrivateState',
     initialPrivateState: privateState,
   });
-  logger.info(`Deployed contract at address: ${counterContract.deployTxData.public.contractAddress}`);
-  return counterContract;
+  logger.info(`Deployed contract at address: ${mintContract.deployTxData.public.contractAddress}`);
+  return mintContract;
 };
 
-export const increment = async (counterContract: DeployedCounterContract): Promise<FinalizedTxData> => {
-  logger.info('Incrementing...');
-  const finalizedTxData = await counterContract.callTx.increment();
+/**
+ * Get the unshielded wallet address as raw bytes (32 bytes)
+ */
+export const getUnshieldedAddressBytes = async (wallet: WalletFacade): Promise<Uint8Array> => {
+  const state = await Rx.firstValueFrom(wallet.state().pipe(Rx.filter((s) => s.isSynced)));
+  // The unshielded address is essentially the public key
+  // Convert it to a format we can use - get the underlying bytes
+  const addressString = state.unshielded.address.hexString;
+  return hexToBytes(addressString);
+};
+
+// Helper to convert hex string to Uint8Array for Bytes<32>
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(32);
+  for (let i = 0; i < 32 && i * 2 < hex.length; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+export const mintTokensX = async (
+  mintContract: DeployedMintContract,
+  amount: bigint,
+  recipientAddressBytes: Uint8Array,
+): Promise<FinalizedTxData> => {
+  logger.info(`Minting ${amount} X tokens to ${Buffer.from(recipientAddressBytes).toString('hex')}...`);
+  
+  // For unshielded tokens: Either<ContractAddress, UserAddress>
+  // Use is_left=false to indicate UserAddress (right side)
+  const recipient = {
+    is_left: false,  // Use right side for UserAddress
+    left: { bytes: new Uint8Array(32) },  // Empty ContractAddress
+    right: { bytes: recipientAddressBytes },  // UserAddress
+  };
+  
+  const finalizedTxData = await mintContract.callTx.mintTestTokensX(amount, recipient);
   logger.info(`Transaction ${finalizedTxData.public.txId} added in block ${finalizedTxData.public.blockHeight}`);
   return finalizedTxData.public;
 };
 
-export const displayCounterValue = async (
-  providers: CounterProviders,
-  counterContract: DeployedCounterContract,
-): Promise<{ counterValue: bigint | null; contractAddress: string }> => {
-  const contractAddress = counterContract.deployTxData.public.contractAddress;
-  const counterValue = await getCounterLedgerState(providers, contractAddress);
-  if (counterValue === null) {
-    logger.info(`There is no counter contract deployed at ${contractAddress}.`);
-  } else {
-    logger.info(`Current counter value: ${Number(counterValue)}`);
-  }
-  return { contractAddress, counterValue };
+export const mintTokensY = async (
+  mintContract: DeployedMintContract,
+  amount: bigint,
+  recipientAddressBytes: Uint8Array,
+): Promise<FinalizedTxData> => {
+  logger.info(`Minting ${amount} Y tokens to ${Buffer.from(recipientAddressBytes).toString('hex')}...`);
+  
+  // For unshielded tokens: Either<ContractAddress, UserAddress>
+  const recipient = {
+    is_left: false,  // Use right side for UserAddress
+    left: { bytes: new Uint8Array(32) },  // Empty ContractAddress
+    right: { bytes: recipientAddressBytes },  // UserAddress
+  };
+  
+  const finalizedTxData = await mintContract.callTx.mintTestTokensY(amount, recipient);
+  logger.info(`Transaction ${finalizedTxData.public.txId} added in block ${finalizedTxData.public.blockHeight}`);
+  return finalizedTxData.public;
 };
 
 /**
@@ -450,7 +476,6 @@ export const buildWalletAndWaitForFunds = async (config: Config, seed: string): 
       const shieldedSecretKeys = ledger.ZswapSecretKeys.fromSeed(keys[Roles.Zswap]);
       const dustSecretKey = ledger.DustSecretKey.fromSeed(keys[Roles.Dust]);
       const unshieldedKeystore = createKeystore(keys[Roles.NightExternal], getNetworkId());
-
       const shieldedWallet = ShieldedWallet(buildShieldedConfig(config)).startWithSecretKeys(shieldedSecretKeys);
       const unshieldedWallet = UnshieldedWallet(buildUnshieldedConfig(config)).startWithPublicKey(
         PublicKey.fromKeyStore(unshieldedKeystore),
@@ -507,14 +532,84 @@ export const buildFreshWallet = async (config: Config): Promise<WalletContext> =
   await buildWalletAndWaitForFunds(config, toHex(Buffer.from(generateRandomSeed())));
 
 /**
+ * Build a wallet from a 24-word BIP39 mnemonic phrase.
+ * 
+ * This function allows you to restore an existing wallet using your mnemonic backup.
+ * The mnemonic is converted to a seed using BIP39 standard, then the wallet is
+ * initialized with the same process as a new wallet.
+ * 
+ * @param config - Network configuration (preprod/preview)
+ * @param mnemonic - 24-word mnemonic phrase (space-separated)
+ * @returns WalletContext with the restored wallet
+ * 
+ * @example
+ * ```typescript
+ * const mnemonic = "word1 word2 word3 ... word24";
+ * const wallet = await buildWalletFromMnemonic(config, mnemonic);
+ * ```
+ */
+export const buildWalletFromMnemonic = async (config: Config, mnemonic: string): Promise<WalletContext> => {
+  // Validate mnemonic
+  if (!bip39.validateMnemonic(mnemonic)) {
+    throw new Error('Invalid mnemonic phrase. Please check your 24-word phrase.');
+  }
+
+  // Convert mnemonic to seed (64 bytes / 128 hex chars)
+  const seedBuffer = bip39.mnemonicToSeedSync(mnemonic, ''); // Empty passphrase
+  const seed = seedBuffer.toString('hex');
+
+  console.log('\n✓ Mnemonic validated successfully');
+  console.log(`✓ Restoring wallet from seed: ${seed.slice(0, 16)}...${seed.slice(-16)}\n`);
+
+  // Use the same wallet building process as other methods
+  return await buildWalletAndWaitForFunds(config, seed);
+};
+
+/**
+ * Generate a new 24-word BIP39 mnemonic and display it to the user.
+ * This is useful for creating a new wallet with a human-readable backup.
+ * 
+ * @param config - Network configuration
+ * @returns WalletContext with the new wallet AND the mnemonic phrase
+ */
+export const buildFreshWalletWithMnemonic = async (
+  config: Config,
+): Promise<WalletContext & { mnemonic: string }> => {
+  // Generate 256-bit entropy → 24 words
+  const mnemonic = bip39.generateMnemonic(256);
+
+  const DIV = '══════════════════════════════════════════════════════════════';
+  console.log(`
+${DIV}
+  🔑 NEW WALLET MNEMONIC (24 WORDS)
+${DIV}
+
+  ⚠️  WRITE DOWN THESE 24 WORDS AND KEEP THEM SAFE!
+  ⚠️  Anyone with these words can access your wallet!
+
+  ${mnemonic}
+
+${DIV}
+`);
+
+  // Convert to seed and build wallet
+  const seedBuffer = bip39.mnemonicToSeedSync(mnemonic, '');
+  const seed = seedBuffer.toString('hex');
+
+  const walletContext = await buildWalletAndWaitForFunds(config, seed);
+
+  return { ...walletContext, mnemonic };
+};
+
+/**
  * Configure all midnight-js providers needed for contract deployment and interaction.
  * This wires together the wallet, proof server, indexer, and private state storage.
  */
 export const configureProviders = async (ctx: WalletContext, config: Config) => {
   const walletAndMidnightProvider = await createWalletAndMidnightProvider(ctx);
-  const zkConfigProvider = new NodeZkConfigProvider<CounterCircuits>(contractConfig.zkConfigPath);
+  const zkConfigProvider = new NodeZkConfigProvider<MintCircuits>(contractConfig.zkConfigPath);
   return {
-    privateStateProvider: levelPrivateStateProvider<typeof CounterPrivateStateId>({
+    privateStateProvider: levelPrivateStateProvider<typeof MintPrivateStateId>({
       privateStateStoreName: contractConfig.privateStateStoreName,
       walletProvider: walletAndMidnightProvider,
     }),

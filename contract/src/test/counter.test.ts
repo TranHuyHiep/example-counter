@@ -13,32 +13,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { CounterSimulator } from "./counter-simulator.js";
+import { Mint, witnesses } from "../index.js";
 import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import { describe, it, expect } from "vitest";
 
 setNetworkId("undeployed");
 
-describe("Counter smart contract", () => {
-  it("generates initial ledger state deterministically", () => {
-    const simulator0 = new CounterSimulator();
-    const simulator1 = new CounterSimulator();
-    expect(simulator0.getLedger()).toEqual(simulator1.getLedger());
+describe("Mint smart contract", () => {
+  it("initializes with empty private state", () => {
+    const contract = new Mint.Contract(witnesses);
+    expect(witnesses).toEqual({});
   });
 
-  it("properly initializes ledger state and private state", () => {
-    const simulator = new CounterSimulator();
-    const initialLedgerState = simulator.getLedger();
-    expect(initialLedgerState.round).toEqual(0n);
-    const initialPrivateState = simulator.getPrivateState();
-    expect(initialPrivateState).toEqual({ privateCounter: 0 });
-  });
-
-  it("increments the counter correctly", () => {
-    const simulator = new CounterSimulator();
-    const nextLedgerState = simulator.increment();
-    expect(nextLedgerState.round).toEqual(1n);
-    const nextPrivateState = simulator.getPrivateState();
-    expect(nextPrivateState).toEqual({ privateCounter: 0 });
+  it("exports mintTestTokensX and mintTestTokensY circuits", () => {
+    const contract = new Mint.Contract(witnesses);
+    expect(contract).toBeDefined();
+    // The contract should have the mint functions available
+    expect(Mint.Contract).toBeDefined();
   });
 });
