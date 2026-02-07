@@ -15,8 +15,9 @@
 
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
+import { randomBytes } from 'crypto';
 import { type ContractAddress } from '@midnight-ntwrk/compact-runtime';
-import { Mint, type MintPrivateState, witnesses } from '@midnight-ntwrk/counter-contract';
+import { FaucetAMM, type FaucetAMMPrivateState, witnesses } from '@midnight-ntwrk/counter-contract';
 import * as ledger from '@midnight-ntwrk/ledger-v7';
 import { unshieldedToken } from '@midnight-ntwrk/ledger-v7';
 import { deployContract, findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
@@ -39,11 +40,11 @@ import { type Logger } from 'pino';
 import * as Rx from 'rxjs';
 import { WebSocket } from 'ws';
 import {
-  type MintCircuits,
-  type MintContract,
-  type MintPrivateStateId,
-  type MintProviders,
-  type DeployedMintContract,
+  type FaucetAMMCircuits,
+  type FaucetAMMContract,
+  type FaucetAMMPrivateStateId,
+  type FaucetAMMProviders,
+  type DeployedFaucetAMMContract,
 } from './common-types';
 import { type Config, contractConfig } from './config';
 import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-private-state-provider';
@@ -65,8 +66,8 @@ let logger: Logger;
 // @ts-expect-error: It's needed to enable WebSocket usage through apollo
 globalThis.WebSocket = WebSocket;
 
-// Pre-compile the mint contract with ZK circuit assets
-const mintCompiledContract = CompiledContract.make('mint', Mint.Contract).pipe(
+// Pre-compile the FaucetAMM contract with ZK circuit assets
+const faucetAMMCompiledContract = CompiledContract.make('FaucetAMM', FaucetAMM.Contract<FaucetAMMPrivateState>).pipe(
   CompiledContract.withVacantWitnesses,
   CompiledContract.withCompiledFileAssets(contractConfig.zkConfigPath),
 );
@@ -78,34 +79,46 @@ export interface WalletContext {
   unshieldedKeystore: UnshieldedKeystore;
 }
 
-export const mintContractInstance: MintContract = new Mint.Contract(witnesses);
+export const faucetAMMContractInstance: FaucetAMMContract = new FaucetAMM.Contract(witnesses);
 
 export const joinContract = async (
-  providers: MintProviders,
+  providers: FaucetAMMProviders,
   contractAddress: string,
-): Promise<DeployedMintContract> => {
-  const mintContract = await findDeployedContract(providers, {
+): Promise<DeployedFaucetAMMContract> => {
+  const faucetAMMContract = await findDeployedContract(providers, {
     contractAddress,
-    compiledContract: mintCompiledContract,
-    privateStateId: 'mintPrivateState',
+    compiledContract: faucetAMMCompiledContract,
+    privateStateId: 'faucetAMMPrivateState',
     initialPrivateState: {},
   });
-  logger.info(`Joined contract at address: ${mintContract.deployTxData.public.contractAddress}`);
-  return mintContract;
+  logger.info(`Joined contract at address: ${faucetAMMContract.deployTxData.public.contractAddress}`);
+  
+  // Initialize pool tracker with default fee (can't read ledger yet)
+  initPoolTracker(faucetAMMContract.deployTxData.public.contractAddress, 10n);
+  logger.warn('Joined existing contract - pool state tracker initialized to zeros');
+  logger.warn('Perform operations to update local tracking');
+  
+  return faucetAMMContract;
 };
 
 export const deploy = async (
-  providers: MintProviders,
-  privateState: MintPrivateState,
-): Promise<DeployedMintContract> => {
-  logger.info('Deploying mint contract...');
-  const mintContract = await deployContract(providers, {
-    compiledContract: mintCompiledContract,
-    privateStateId: 'mintPrivateState',
+  providers: FaucetAMMProviders,
+  privateState: FaucetAMMPrivateState,
+  feeBps: bigint,
+): Promise<DeployedFaucetAMMContract> => {
+  logger.info(`Deploying FaucetAMM contract with fee ${feeBps} bps...`);
+  const faucetAMMContract = await deployContract(providers, {
+    compiledContract: faucetAMMCompiledContract,
+    privateStateId: 'faucetAMMPrivateState',
     initialPrivateState: privateState,
+    args: [feeBps],
   });
-  logger.info(`Deployed contract at address: ${mintContract.deployTxData.public.contractAddress}`);
-  return mintContract;
+  logger.info(`Deployed contract at address: ${faucetAMMContract.deployTxData.public.contractAddress}`);
+  
+  // Initialize pool tracker
+  initPoolTracker(faucetAMMContract.deployTxData.public.contractAddress, feeBps);
+  
+  return faucetAMMContract;
 };
 
 /**
@@ -129,42 +142,318 @@ function hexToBytes(hex: string): Uint8Array {
 }
 
 export const mintTokensX = async (
-  mintContract: DeployedMintContract,
+  faucetAMMContract: DeployedFaucetAMMContract,
   amount: bigint,
-  recipientAddressBytes: Uint8Array,
+  wallet: WalletFacade,
 ): Promise<FinalizedTxData> => {
-  logger.info(`Minting ${amount} X tokens to ${Buffer.from(recipientAddressBytes).toString('hex')}...`);
+  logger.info(`Minting ${amount} X tokens (unshielded)...`);
+  
+  const state = await Rx.firstValueFrom(wallet.state().pipe(Rx.filter((s) => s.isSynced)));
+  
+  // Get unshielded address bytes (32 bytes)
+  const userAddressHex = state.unshielded.address.hexString;
+  const userAddressBytes = new Uint8Array(32);
+  const hexBytes = Buffer.from(userAddressHex, 'hex');
+  userAddressBytes.set(hexBytes.slice(0, 32));
+  
+  logger.info(`Recipient unshielded address: ${userAddressHex}`);
   
   // For unshielded tokens: Either<ContractAddress, UserAddress>
-  // Use is_left=false to indicate UserAddress (right side)
+  // Use is_left=false to send to UserAddress (unshielded wallet)
   const recipient = {
     is_left: false,  // Use right side for UserAddress
     left: { bytes: new Uint8Array(32) },  // Empty ContractAddress
-    right: { bytes: recipientAddressBytes },  // UserAddress
+    right: { bytes: userAddressBytes },  // UserAddress
   };
   
-  const finalizedTxData = await mintContract.callTx.mintTestTokensX(amount, recipient);
+  const finalizedTxData = await faucetAMMContract.callTx.mintTestTokensX(amount, recipient);
   logger.info(`Transaction ${finalizedTxData.public.txId} added in block ${finalizedTxData.public.blockHeight}`);
   return finalizedTxData.public;
 };
 
 export const mintTokensY = async (
-  mintContract: DeployedMintContract,
+  faucetAMMContract: DeployedFaucetAMMContract,
   amount: bigint,
-  recipientAddressBytes: Uint8Array,
+  wallet: WalletFacade,
 ): Promise<FinalizedTxData> => {
-  logger.info(`Minting ${amount} Y tokens to ${Buffer.from(recipientAddressBytes).toString('hex')}...`);
+  logger.info(`Minting ${amount} Y tokens (unshielded)...`);
+  
+  const state = await Rx.firstValueFrom(wallet.state().pipe(Rx.filter((s) => s.isSynced)));
+  
+  // Get unshielded address bytes (32 bytes)
+  const userAddressHex = state.unshielded.address.hexString;
+  const userAddressBytes = new Uint8Array(32);
+  const hexBytes = Buffer.from(userAddressHex, 'hex');
+  userAddressBytes.set(hexBytes.slice(0, 32));
   
   // For unshielded tokens: Either<ContractAddress, UserAddress>
   const recipient = {
-    is_left: false,  // Use right side for UserAddress
-    left: { bytes: new Uint8Array(32) },  // Empty ContractAddress
-    right: { bytes: recipientAddressBytes },  // UserAddress
+    is_left: false,
+    left: { bytes: new Uint8Array(32) },
+    right: { bytes: userAddressBytes },
   };
   
-  const finalizedTxData = await mintContract.callTx.mintTestTokensY(amount, recipient);
+  const finalizedTxData = await faucetAMMContract.callTx.mintTestTokensY(amount, recipient);
   logger.info(`Transaction ${finalizedTxData.public.txId} added in block ${finalizedTxData.public.blockHeight}`);
   return finalizedTxData.public;
+};
+
+// ============================================
+// AMM LIQUIDITY FUNCTIONS
+// ============================================
+
+export const initLiquidity = async (
+  faucetAMMContract: DeployedFaucetAMMContract,
+  xIn: bigint,
+  yIn: bigint,
+  lpOut: bigint,
+  wallet: WalletFacade,
+): Promise<FinalizedTxData> => {
+  logger.info(`Initializing liquidity pool: ${xIn} X + ${yIn} Y -> ${lpOut} LP...`);
+  
+  const state = await Rx.firstValueFrom(wallet.state().pipe(Rx.filter((s) => s.isSynced)));
+  const userAddressHex = state.unshielded.address.hexString;
+  const userAddressBytes = new Uint8Array(32);
+  const hexBytes = Buffer.from(userAddressHex, 'hex');
+  userAddressBytes.set(hexBytes.slice(0, 32));
+  
+  const recipient = {
+    is_left: false,
+    left: { bytes: new Uint8Array(32) },
+    right: { bytes: userAddressBytes },
+  };
+  
+  const finalizedTxData = await faucetAMMContract.callTx.initLiquidity(xIn, yIn, lpOut, recipient);
+  logger.info(`Transaction ${finalizedTxData.public.txId} added in block ${finalizedTxData.public.blockHeight}`);
+  
+  // Update local pool tracker
+  const contractAddress = faucetAMMContract.deployTxData.public.contractAddress;
+  updatePoolTracker(contractAddress, {
+    xLiquidity: xIn,
+    yLiquidity: yIn,
+    lpCirculatingSupply: lpOut,
+  });
+  logger.info(`Pool tracker updated: xLiq=${xIn}, yLiq=${yIn}, lpSupply=${lpOut}`);
+  
+  return finalizedTxData.public;
+};
+
+export const addLiquidity = async (
+  faucetAMMContract: DeployedFaucetAMMContract,
+  xIn: bigint,
+  yIn: bigint,
+  lpOut: bigint,
+  wallet: WalletFacade,
+): Promise<FinalizedTxData> => {
+  logger.info(`Adding liquidity: ${xIn} X + ${yIn} Y -> ${lpOut} LP...`);
+  
+  const state = await Rx.firstValueFrom(wallet.state().pipe(Rx.filter((s) => s.isSynced)));
+  const userAddressHex = state.unshielded.address.hexString;
+  const userAddressBytes = new Uint8Array(32);
+  const hexBytes = Buffer.from(userAddressHex, 'hex');
+  userAddressBytes.set(hexBytes.slice(0, 32));
+  
+  const recipient = {
+    is_left: false,
+    left: { bytes: new Uint8Array(32) },
+    right: { bytes: userAddressBytes },
+  };
+  
+  const finalizedTxData = await faucetAMMContract.callTx.addLiquidity(xIn, yIn, lpOut, recipient);
+  logger.info(`Transaction ${finalizedTxData.public.txId} added in block ${finalizedTxData.public.blockHeight}`);
+  
+  // Update local pool tracker
+  const contractAddress = faucetAMMContract.deployTxData.public.contractAddress;
+  const tracker = poolTrackers.get(contractAddress);
+  if (tracker) {
+    tracker.xLiquidity += xIn;
+    tracker.yLiquidity += yIn;
+    tracker.lpCirculatingSupply += lpOut;
+    logger.info(`Pool tracker updated: xLiq=${tracker.xLiquidity}, yLiq=${tracker.yLiquidity}, lpSupply=${tracker.lpCirculatingSupply}`);
+  }
+  
+  return finalizedTxData.public;
+};
+
+export const removeLiquidity = async (
+  faucetAMMContract: DeployedFaucetAMMContract,
+  lpIn: bigint,
+  xOut: bigint,
+  yOut: bigint,
+  wallet: WalletFacade,
+): Promise<FinalizedTxData> => {
+  logger.info(`Removing liquidity: ${lpIn} LP -> ${xOut} X + ${yOut} Y...`);
+  
+  const state = await Rx.firstValueFrom(wallet.state().pipe(Rx.filter((s) => s.isSynced)));
+  const userAddressHex = state.unshielded.address.hexString;
+  const userAddressBytes = new Uint8Array(32);
+  const hexBytes = Buffer.from(userAddressHex, 'hex');
+  userAddressBytes.set(hexBytes.slice(0, 32));
+  
+  const recipient = {
+    is_left: false,
+    left: { bytes: new Uint8Array(32) },
+    right: { bytes: userAddressBytes },
+  };
+  
+  const finalizedTxData = await faucetAMMContract.callTx.removeLiquidity(lpIn, xOut, yOut, recipient);
+  logger.info(`Transaction ${finalizedTxData.public.txId} added in block ${finalizedTxData.public.blockHeight}`);
+  
+  // Update local pool tracker
+  const contractAddress = faucetAMMContract.deployTxData.public.contractAddress;
+  const tracker = poolTrackers.get(contractAddress);
+  if (tracker) {
+    tracker.xLiquidity -= xOut;
+    tracker.yLiquidity -= yOut;
+    tracker.lpCirculatingSupply -= lpIn;
+    logger.info(`Pool tracker updated: xLiq=${tracker.xLiquidity}, yLiq=${tracker.yLiquidity}, lpSupply=${tracker.lpCirculatingSupply}`);
+  }
+  
+  return finalizedTxData.public;
+};
+
+export const swapXToY = async (
+  faucetAMMContract: DeployedFaucetAMMContract,
+  xIn: bigint,
+  xFee: bigint,
+  yOut: bigint,
+  wallet: WalletFacade,
+): Promise<FinalizedTxData> => {
+  logger.info(`Swapping ${xIn} X (fee: ${xFee}) -> ${yOut} Y...`);
+  
+  const state = await Rx.firstValueFrom(wallet.state().pipe(Rx.filter((s) => s.isSynced)));
+  const userAddressHex = state.unshielded.address.hexString;
+  const userAddressBytes = new Uint8Array(32);
+  const hexBytes = Buffer.from(userAddressHex, 'hex');
+  userAddressBytes.set(hexBytes.slice(0, 32));
+  
+  const recipient = {
+    is_left: false,
+    left: { bytes: new Uint8Array(32) },
+    right: { bytes: userAddressBytes },
+  };
+  
+  const finalizedTxData = await faucetAMMContract.callTx.swapXToY(xIn, xFee, yOut, recipient);
+  logger.info(`Transaction ${finalizedTxData.public.txId} added in block ${finalizedTxData.public.blockHeight}`);
+  
+  // Update local pool tracker
+  const contractAddress = faucetAMMContract.deployTxData.public.contractAddress;
+  const tracker = poolTrackers.get(contractAddress);
+  if (tracker) {
+    tracker.xLiquidity += xIn;
+    tracker.yLiquidity -= yOut;
+    tracker.xRewards += xFee;
+    logger.info(`Pool tracker updated: xLiq=${tracker.xLiquidity}, yLiq=${tracker.yLiquidity}, xRewards=${tracker.xRewards}`);
+  }
+  
+  return finalizedTxData.public;
+};
+
+export const swapYToX = async (
+  faucetAMMContract: DeployedFaucetAMMContract,
+  yIn: bigint,
+  xFee: bigint,
+  xOut: bigint,
+  wallet: WalletFacade,
+): Promise<FinalizedTxData> => {
+  logger.info(`Swapping ${yIn} Y -> ${xOut} X (fee: ${xFee})...`);
+  
+  const state = await Rx.firstValueFrom(wallet.state().pipe(Rx.filter((s) => s.isSynced)));
+  const userAddressHex = state.unshielded.address.hexString;
+  const userAddressBytes = new Uint8Array(32);
+  const hexBytes = Buffer.from(userAddressHex, 'hex');
+  userAddressBytes.set(hexBytes.slice(0, 32));
+  
+  const recipient = {
+    is_left: false,
+    left: { bytes: new Uint8Array(32) },
+    right: { bytes: userAddressBytes },
+  };
+  
+  const finalizedTxData = await faucetAMMContract.callTx.swapYToX(yIn, xFee, xOut, recipient);
+  logger.info(`Transaction ${finalizedTxData.public.txId} added in block ${finalizedTxData.public.blockHeight}`);
+  
+  // Update local pool tracker
+  const contractAddress = faucetAMMContract.deployTxData.public.contractAddress;
+  const tracker = poolTrackers.get(contractAddress);
+  if (tracker) {
+    tracker.xLiquidity -= xOut;
+    tracker.yLiquidity += yIn;
+    tracker.xRewards += xFee;
+    logger.info(`Pool tracker updated: xLiq=${tracker.xLiquidity}, yLiq=${tracker.yLiquidity}, xRewards=${tracker.xRewards}`);
+  }
+  
+  return finalizedTxData.public;
+};
+
+// ============================================
+// POOL STATUS
+// ============================================
+
+// ============================================
+// POOL STATUS TRACKER (Client-side)
+// ============================================
+
+// Local tracking of pool state (since ledger reading requires indexer)
+interface PoolStateTracker {
+  feeBps: bigint;
+  xRewards: bigint;
+  xLiquidity: bigint;
+  yLiquidity: bigint;
+  lpCirculatingSupply: bigint;
+}
+
+const poolTrackers = new Map<string, PoolStateTracker>();
+
+export const initPoolTracker = (contractAddress: string, feeBps: bigint) => {
+  poolTrackers.set(contractAddress, {
+    feeBps,
+    xRewards: 0n,
+    xLiquidity: 0n,
+    yLiquidity: 0n,
+    lpCirculatingSupply: 0n,
+  });
+};
+
+export const updatePoolTracker = (
+  contractAddress: string,
+  updates: Partial<PoolStateTracker>
+) => {
+  const tracker = poolTrackers.get(contractAddress);
+  if (tracker) {
+    Object.assign(tracker, updates);
+  }
+};
+
+export const getPoolStatus = async (
+  faucetAMMContract: DeployedFaucetAMMContract,
+  wallet: WalletFacade,
+): Promise<{
+  feeBps: bigint;
+  xRewards: bigint;
+  xLiquidity: bigint;
+  yLiquidity: bigint;
+  lpCirculatingSupply: bigint;
+}> => {
+  logger.info('Reading pool status from contract ledger...');
+  
+  const contractAddress = faucetAMMContract.deployTxData.public.contractAddress;
+  const tracker = poolTrackers.get(contractAddress);
+  
+  if (!tracker) {
+    logger.warn('No local pool tracker found. Returning default values.');
+    logger.warn('Note: Ledger state reading requires indexer API (not yet available)');
+    return {
+      feeBps: 10n,
+      xRewards: 0n,
+      xLiquidity: 0n,
+      yLiquidity: 0n,
+      lpCirculatingSupply: 0n,
+    };
+  }
+  
+  logger.info(`Pool state (client-side tracking): x=${tracker.xLiquidity}, y=${tracker.yLiquidity}, lp=${tracker.lpCirculatingSupply}`);
+  return { ...tracker };
 };
 
 /**
@@ -607,9 +896,9 @@ ${DIV}
  */
 export const configureProviders = async (ctx: WalletContext, config: Config) => {
   const walletAndMidnightProvider = await createWalletAndMidnightProvider(ctx);
-  const zkConfigProvider = new NodeZkConfigProvider<MintCircuits>(contractConfig.zkConfigPath);
+  const zkConfigProvider = new NodeZkConfigProvider<FaucetAMMCircuits>(contractConfig.zkConfigPath);
   return {
-    privateStateProvider: levelPrivateStateProvider<typeof MintPrivateStateId>({
+    privateStateProvider: levelPrivateStateProvider<typeof FaucetAMMPrivateStateId>({
       privateStateStoreName: contractConfig.privateStateStoreName,
       walletProvider: walletAndMidnightProvider,
     }),

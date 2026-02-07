@@ -13,17 +13,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Mint, type MintPrivateState } from '@midnight-ntwrk/counter-contract';
+import { FaucetAMM, type FaucetAMMPrivateState } from '@midnight-ntwrk/counter-contract';
 import type { MidnightProviders } from '@midnight-ntwrk/midnight-js-types';
 import type { DeployedContract, FoundContract } from '@midnight-ntwrk/midnight-js-contracts';
 import type { ImpureCircuitId } from '@midnight-ntwrk/compact-js';
 
-export type MintCircuits = ImpureCircuitId<Mint.Contract<MintPrivateState>>;
+export type FaucetAMMCircuits = ImpureCircuitId<FaucetAMM.Contract<FaucetAMMPrivateState>>;
 
-export const MintPrivateStateId = 'mintPrivateState';
+export const FaucetAMMPrivateStateId = 'faucetAMMPrivateState';
 
-export type MintProviders = MidnightProviders<MintCircuits, typeof MintPrivateStateId, MintPrivateState>;
+export type FaucetAMMProviders = MidnightProviders<FaucetAMMCircuits, typeof FaucetAMMPrivateStateId, FaucetAMMPrivateState>;
 
-export type MintContract = Mint.Contract<MintPrivateState>;
+export type FaucetAMMContract = FaucetAMM.Contract<FaucetAMMPrivateState>;
 
-export type DeployedMintContract = DeployedContract<MintContract> | FoundContract<MintContract>;
+export type DeployedFaucetAMMContract = DeployedContract<FaucetAMMContract> | FoundContract<FaucetAMMContract>;

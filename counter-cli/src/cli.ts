@@ -18,7 +18,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import { createInterface, type Interface } from 'node:readline/promises';
 import { type Logger } from 'pino';
 import { type StartedDockerComposeEnvironment, type DockerComposeEnvironment } from 'testcontainers';
-import { type MintProviders, type DeployedMintContract } from './common-types';
+import { type FaucetAMMProviders, type DeployedFaucetAMMContract } from './common-types';
 import { type Config, StandaloneConfig } from './config';
 import * as api from './api';
 
@@ -73,11 +73,17 @@ ${'─'.repeat(62)}
 /** Build the mint actions menu, showing current DUST balance in the header. */
 const mintMenu = (dustBalance: string) => `
 ${DIVIDER}
-  Mint Actions${dustBalance ? `                        DUST: ${dustBalance}` : ''}
+  Token & AMM Actions${dustBalance ? `                 DUST: ${dustBalance}` : ''}
 ${DIVIDER}
   [1] Mint X tokens
   [2] Mint Y tokens
-  [3] Exit
+  [3] Initialize liquidity pool
+  [4] Add liquidity
+  [5] Remove liquidity
+  [6] Swap X for Y
+  [7] Swap Y for X
+  [8] View pool status
+  [9] Exit
 ${'─'.repeat(62)}
 > `;
 
@@ -139,7 +145,7 @@ const getDustLabel = async (wallet: api.WalletContext['wallet']): Promise<string
 };
 
 /** Prompt for a contract address and join an existing deployed contract. */
-const joinContract = async (providers: MintProviders, rli: Interface): Promise<DeployedMintContract> => {
+const joinContract = async (providers: FaucetAMMProviders, rli: Interface): Promise<DeployedFaucetAMMContract> => {
   const contractAddress = await rli.question('Enter the contract address (hex): ');
   return await api.joinContract(providers, contractAddress);
 };
@@ -161,18 +167,19 @@ const startDustMonitor = async (wallet: api.WalletContext['wallet'], rli: Interf
  * Errors during deploy/join are caught and displayed — the user stays in the menu.
  */
 const deployOrJoin = async (
-  providers: MintProviders,
+  providers: FaucetAMMProviders,
   walletCtx: api.WalletContext,
   rli: Interface,
-): Promise<DeployedMintContract | null> => {
+): Promise<DeployedFaucetAMMContract | null> => {
   while (true) {
     const dustLabel = await getDustLabel(walletCtx.wallet);
     const choice = await rli.question(contractMenu(dustLabel));
     switch (choice.trim()) {
       case '1':
         try {
-          const contract = await api.withStatus('Deploying mint contract', () =>
-            api.deploy(providers, {}),
+          const feeBps = BigInt(10); // 10 basis points = 0.1% fee
+          const contract = await api.withStatus('Deploying FaucetAMM contract', () =>
+            api.deploy(providers, {}, feeBps),
           );
           console.log(`  Contract deployed at: ${contract.deployTxData.public.contractAddress}\n`);
           return contract;
@@ -222,15 +229,14 @@ const deployOrJoin = async (
  * Main interaction loop. Once a contract is deployed/joined, the user
  * can mint tokens X or Y.
  */
-const mainLoop = async (providers: MintProviders, walletCtx: api.WalletContext, rli: Interface): Promise<void> => {
+const mainLoop = async (providers: FaucetAMMProviders, walletCtx: api.WalletContext, rli: Interface): Promise<void> => {
   const mintContract = await deployOrJoin(providers, walletCtx, rli);
   if (mintContract === null) {
     return;
   }
 
-  // Get wallet address bytes for minting
-  const walletAddressBytes = await api.getUnshieldedAddressBytes(walletCtx.wallet);
-  logger.info(`Using wallet address: ${Buffer.from(walletAddressBytes).toString('hex')}`);
+  // For FaucetAMM with shielded tokens - pass the wallet directly
+  logger.info(`Wallet ready for minting shielded tokens`);
 
   while (true) {
     const dustLabel = await getDustLabel(walletCtx.wallet);
@@ -239,10 +245,10 @@ const mainLoop = async (providers: MintProviders, walletCtx: api.WalletContext, 
       case '1':
         try {
           const amount = await rli.question('Enter amount of X tokens to mint: ');
-          await api.withStatus('Minting X tokens', () => 
-            api.mintTokensX(mintContract, BigInt(amount), walletAddressBytes)
+          await api.withStatus('Minting X tokens (shielded)', () => 
+            api.mintTokensX(mintContract, BigInt(amount), walletCtx.wallet)
           );
-          console.log(`  ✓ Minted ${amount} X tokens\n`);
+          console.log(`  ✓ Minted ${amount} X tokens (shielded)\n`);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           console.log(`  ✗ Mint X tokens failed: ${msg}\n`);
@@ -251,16 +257,119 @@ const mainLoop = async (providers: MintProviders, walletCtx: api.WalletContext, 
       case '2':
         try {
           const amount = await rli.question('Enter amount of Y tokens to mint: ');
-          await api.withStatus('Minting Y tokens', () => 
-            api.mintTokensY(mintContract, BigInt(amount), walletAddressBytes)
+          await api.withStatus('Minting Y tokens (shielded)', () => 
+            api.mintTokensY(mintContract, BigInt(amount), walletCtx.wallet)
           );
-          console.log(`  ✓ Minted ${amount} Y tokens\n`);
+          console.log(`  ✓ Minted ${amount} Y tokens (shielded)\n`);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           console.log(`  ✗ Mint Y tokens failed: ${msg}\n`);
         }
         break;
       case '3':
+        try {
+          const xIn = await rli.question('Enter X tokens to add: ');
+          const yIn = await rli.question('Enter Y tokens to add: ');
+          const lpOut = await rli.question('Enter LP tokens to receive: ');
+          await api.withStatus('Initializing liquidity', () =>
+            api.initLiquidity(mintContract, BigInt(xIn), BigInt(yIn), BigInt(lpOut), walletCtx.wallet)
+          );
+          console.log(`  ✓ Liquidity initialized: ${xIn} X + ${yIn} Y -> ${lpOut} LP\n`);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.log(`  ✗ Init liquidity failed: ${msg}\n`);
+        }
+        break;
+      case '4':
+        try {
+          const xIn = await rli.question('Enter X tokens to add: ');
+          const yIn = await rli.question('Enter Y tokens to add: ');
+          const lpOut = await rli.question('Enter LP tokens to receive: ');
+          await api.withStatus('Adding liquidity', () =>
+            api.addLiquidity(mintContract, BigInt(xIn), BigInt(yIn), BigInt(lpOut), walletCtx.wallet)
+          );
+          console.log(`  ✓ Added liquidity: ${xIn} X + ${yIn} Y -> ${lpOut} LP\n`);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.log(`  ✗ Add liquidity failed: ${msg}\n`);
+        }
+        break;
+      case '5':
+        try {
+          const lpIn = await rli.question('Enter LP tokens to burn: ');
+          const xOut = await rli.question('Enter X tokens to receive: ');
+          const yOut = await rli.question('Enter Y tokens to receive: ');
+          await api.withStatus('Removing liquidity', () =>
+            api.removeLiquidity(mintContract, BigInt(lpIn), BigInt(xOut), BigInt(yOut), walletCtx.wallet)
+          );
+          console.log(`  ✓ Removed liquidity: ${lpIn} LP -> ${xOut} X + ${yOut} Y\n`);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.log(`  ✗ Remove liquidity failed: ${msg}\n`);
+        }
+        break;
+      case '6':
+        try {
+          const xIn = await rli.question('Enter X tokens to swap: ');
+          const xFee = await rli.question('Enter fee amount (X tokens): ');
+          const yOut = await rli.question('Enter Y tokens to receive: ');
+          await api.withStatus('Swapping X to Y', () =>
+            api.swapXToY(mintContract, BigInt(xIn), BigInt(xFee), BigInt(yOut), walletCtx.wallet)
+          );
+          console.log(`  ✓ Swapped ${xIn} X -> ${yOut} Y (fee: ${xFee})\n`);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.log(`  ✗ Swap X to Y failed: ${msg}\n`);
+        }
+        break;
+      case '7':
+        try {
+          const yIn = await rli.question('Enter Y tokens to swap: ');
+          const xFee = await rli.question('Enter fee amount (X tokens): ');
+          const xOut = await rli.question('Enter X tokens to receive: ');
+          await api.withStatus('Swapping Y to X', () =>
+            api.swapYToX(mintContract, BigInt(yIn), BigInt(xFee), BigInt(xOut), walletCtx.wallet)
+          );
+          console.log(`  ✓ Swapped ${yIn} Y -> ${xOut} X (fee: ${xFee})\n`);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.log(`  ✗ Swap Y to X failed: ${msg}\n`);
+        }
+        break;
+      case '8':
+        try {
+          // View pool status from ledger
+          const poolStatus = await api.getPoolStatus(mintContract, walletCtx.wallet);
+          console.log('\n=== Pool Status ===');
+          console.log(`Fee: ${poolStatus.feeBps} basis points (${Number(poolStatus.feeBps) / 100}%)`);
+          console.log(`X Token Rewards: ${poolStatus.xRewards}`);
+          console.log(`X Token Liquidity: ${poolStatus.xLiquidity}`);
+          console.log(`Y Token Liquidity: ${poolStatus.yLiquidity}`);
+          console.log(`LP Token Supply: ${poolStatus.lpCirculatingSupply}`);
+          
+          // Calculate constant product k
+          const k = poolStatus.xLiquidity * poolStatus.yLiquidity;
+          console.log(`Constant Product (k): ${k}`);
+          
+          // Calculate current price if pool has liquidity
+          if (poolStatus.xLiquidity > 0n && poolStatus.yLiquidity > 0n) {
+            const priceXtoY = Number(poolStatus.yLiquidity) / Number(poolStatus.xLiquidity);
+            const priceYtoX = Number(poolStatus.xLiquidity) / Number(poolStatus.yLiquidity);
+            console.log(`Price X→Y: ${priceXtoY.toFixed(6)}`);
+            console.log(`Price Y→X: ${priceYtoX.toFixed(6)}`);
+          }
+          console.log('===================');
+          console.log('\n💡 Note: This is a FAUCET AMM for testing.');
+          console.log('   Tokens are NOT actually transferred from your wallet.');
+          console.log('   Liquidity operations only UPDATE ledger state.');
+          console.log('   Direct ledger reading requires indexer API (not yet implemented).');
+          console.log('   Track your operations via transaction logs above.\n');
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.log(`  ✗ View pool failed: ${msg}\n`);
+        }
+        break;
+      case '9':
         return;
       default:
         console.log(`  Invalid choice: ${choice}`);

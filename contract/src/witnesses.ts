@@ -14,8 +14,8 @@
 // limitations under the License.
 
 // This is how we type an empty object.
-export type MintPrivateState = {
-  // Empty for now - mint functions don't use private state
+export type FaucetAMMPrivateState = {
+  // Empty for now - FaucetAMM functions don't use private state
 };
 
 export const witnesses = {};
