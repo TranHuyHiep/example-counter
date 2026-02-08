@@ -1,112 +1,87 @@
-import { CircuitContext, constructorContext, emptyZswapLocalState, EncodedCoinInfo, EncodedQualifiedCoinInfo, QueryContext, sampleContractAddress } from "@midnight-ntwrk/compact-runtime"
-import { Contract } from "../dist/contract/index.cjs"
+import { CircuitContext, emptyZswapLocalState, QueryContext, sampleContractAddress, type ContractState } from "@midnight-ntwrk/compact-runtime"
+import { CostModel } from "@midnight-ntwrk/onchain-runtime-v2"
+import { Contract, ledger } from "../../dist/managed/FaucetAMM/contract/index.js"
 import { type Address } from "./addresses"
 
 const dummyTxSender = "0".repeat(64)
+const dummyRecipient = {
+    is_left: false, // Use ContractAddress (right side)
+    left: { bytes: new Uint8Array(32) },
+    right: { bytes: new Uint8Array(32) }
+}
+const dummyNonce = new Uint8Array(32)
+
+// Private state for FaucetAMM (empty since no private variables)
+class PrivateState {}
 
 export class Simulator {
-    private contract: Contract<unknown, {}>;
+    private contract: Contract<PrivateState, {}>;
     readonly address: string;
-    private circuitContext: CircuitContext<unknown>
-    lpReserves: EncodedQualifiedCoinInfo
-    xReserves: EncodedQualifiedCoinInfo
-    yReserves: EncodedQualifiedCoinInfo
+    private circuitContext: CircuitContext<PrivateState>
+    private contractState: ContractState
 
-    constructor(treasury: Address) {
+    constructor(_treasury: Address) {
         const fee = 10n
-        const xColor = new Uint8Array(32).fill(9)
-        const yColor = new Uint8Array(32).fill(10)
-        const nonce0 = new Uint8Array(32)
 
         this.contract = new Contract({})
-
-        const { currentPrivateState, currentContractState, currentZswapLocalState} = this.contract.initialState(
-            constructorContext({
-                xRewards: 0n,
-                xLiquidity: 0n,
-                yLiquidity: 0n,
-            }, dummyTxSender),
-            fee,
-            treasury,
-            xColor,
-            yColor,
-            nonce0
-        )
-
+        
+        // Call initialState with proper ConstructorContext
+        const privateState = new PrivateState()
+        const constructorContext = {
+            initialPrivateState: privateState,
+            transactionSender: dummyTxSender,
+            initialZswapLocalState: emptyZswapLocalState(dummyTxSender)
+        }
+        
+        const result = this.contract.initialState(constructorContext as any, fee)
+        this.contractState = result.currentContractState
+        
         this.address = sampleContractAddress()
 
         this.circuitContext = {
-            currentPrivateState,
-            currentZswapLocalState,
-            originalState: currentContractState,
+            currentPrivateState: privateState,
+            originalState: this.contractState,
+            currentZswapLocalState: emptyZswapLocalState(dummyTxSender),
             transactionContext: new QueryContext(
-                currentContractState.data,
+                this.contractState.data,
                 this.address
-            )
-        }
-
-        this.lpReserves = {
-            nonce: new Uint8Array(32),
-            color: this.contract.circuits.getLPTokenColor(this.circuitContext).result, // TODO: how to determine LP token color?
-            value: 0n,
-            mt_index: 0n
-        }
-
-        this.xReserves = {
-            nonce: new Uint8Array(32),
-            color: xColor,
-            value: 0n,
-            mt_index: 0n
-        }
-
-        this.yReserves = {
-            nonce: new Uint8Array(32),
-            color: yColor,
-            value: 0n,
-            mt_index: 0n
-        }
+            ),
+            currentQueryContext: new QueryContext(
+                this.contractState.data,
+                this.address
+            ),
+            costModel: CostModel.initialCostModel()
+        } as CircuitContext<PrivateState>
     }
 
     getFeeBps(): bigint {
-        const { result } = this.contract.circuits.getFeeBps(this.circuitContext)
-
-        return result
+        const ctx = this.circuitContext as any
+        const state = ctx.transactionContext?.state || (this.contractState as any).data || this.contractState
+        return ledger(state).feeBps
     }
 
     getLPCirculatingSupply(): bigint {
-        const { result } = this.contract.circuits.getLPCirculatingSupply(this.circuitContext)
-
-        return result
-    }
-
-    getXColor(): Uint8Array {
-        const { result } = this.contract.circuits.getXColor(this.circuitContext)
-
-        return result
+        const ctx = this.circuitContext as any
+        const state = ctx.transactionContext?.state || (this.contractState as any).data || this.contractState
+        return ledger(state).lpCirculatingSupply
     }
 
     getXLiquidity(): bigint {
-        const { result } = this.contract.circuits.getXLiquidity(this.circuitContext)
-
-        return result
+        const ctx = this.circuitContext as any
+        const state = ctx.transactionContext?.state || (this.contractState as any).data || this.contractState
+        return ledger(state).xLiquidity
     }
 
     getXRewards(): bigint {
-        const { result } = this.contract.circuits.getXRewards(this.circuitContext)
-
-        return result
-    }
-
-    getYColor(): Uint8Array {
-        const { result } = this.contract.circuits.getYColor(this.circuitContext)
-
-        return result
+        const ctx = this.circuitContext as any
+        const state = ctx.transactionContext?.state || (this.contractState as any).data || this.contractState
+        return ledger(state).xRewards
     }
 
     getYLiquidity(): bigint {
-        const { result } = this.contract.circuits.getYLiquidity(this.circuitContext)
-
-        return result
+        const ctx = this.circuitContext as any
+        const state = ctx.transactionContext?.state || (this.contractState as any).data || this.contractState
+        return ledger(state).yLiquidity
     }
 
     initLiquidity({xIn, yIn, lpOut}: {xIn: bigint, yIn: bigint, lpOut?: bigint}) {
@@ -120,86 +95,76 @@ export class Simulator {
             }
         }
 
-        const { context } = this.contract.circuits.initLiquidity(
-            this.circuitContext, 
-            this.lpReserves,
+        const circuitResults = this.contract.circuits.initLiquidity(
+            this.circuitContext,
             xIn, 
             yIn, 
-            lpOut
+            lpOut,
+            dummyRecipient,
+            dummyNonce
         )
-
-        this.syncCircuitContext(context)
+        
+        this.syncCircuitContext(circuitResults.context)
     }
 
     addLiquidity({xIn, yIn, lpOut}: {xIn: bigint, yIn: bigint, lpOut?: bigint}) {
         lpOut = lpOut ?? BigInt(Math.round(Math.sqrt(Number(xIn)*Number(yIn))))
 
-        const { context } = this.contract.circuits.addLiquidity(
+        const circuitResults = this.contract.circuits.addLiquidity(
             this.circuitContext,
-            this.xReserves,
-            this.yReserves,
-            this.lpReserves,
             xIn,
             yIn, 
-            lpOut
+            lpOut,
+            dummyRecipient,
+            dummyNonce
         )
 
-        this.syncCircuitContext(context)
+        this.syncCircuitContext(circuitResults.context)
     }
 
     removeLiquidity({lpIn, xOut, yOut}: {lpIn: bigint, xOut: bigint, yOut: bigint}) {
-        const { context } = this.contract.circuits.removeLiquidity(
+        const circuitResults = this.contract.circuits.removeLiquidity(
             this.circuitContext,
-            this.xReserves,
-            this.yReserves,
-            this.lpReserves,
             lpIn,
             xOut,
-            yOut
+            yOut,
+            dummyRecipient,
+            dummyNonce
         )
 
-        this.syncCircuitContext(context)
+        this.syncCircuitContext(circuitResults.context)
     }
 
     swapXToY({xIn, xFee, yOut}: {xIn: bigint, xFee?: bigint, yOut?: bigint}) {
         xFee = xFee ?? this.calcSwapXToYFee(xIn)
         yOut = yOut ?? this.calcSwapXToYOut(xIn, xFee)
         
-        const { context } = this.contract.circuits.swapXToY(
+        const circuitResults = this.contract.circuits.swapXToY(
             this.circuitContext,
-            this.xReserves,
-            this.yReserves,
             xIn,
             xFee,
-            yOut
+            yOut,
+            dummyRecipient,
+            dummyNonce
         )
 
-        this.syncCircuitContext(context)
+        this.syncCircuitContext(circuitResults.context)
     }
 
     swapYToX({yIn, xFee, xOut}: {yIn: bigint, xFee?: bigint, xOut?: bigint}) {
         xOut = xOut ?? this.calcSwapYToXOut(yIn)
         xFee = xFee ?? this.calcSwapYToXFee(xOut)
 
-        const { context } = this.contract.circuits.swapYToX(
+        const circuitResults = this.contract.circuits.swapYToX(
             this.circuitContext,
-            this.xReserves,
-            this.yReserves,
             yIn,
             xFee,
-            xOut
+            xOut,
+            dummyRecipient,
+            dummyNonce
         )
 
-        this.syncCircuitContext(context)
-    }
-
-    rewardTreasury() {
-        const { context } = this.contract.circuits.rewardTreasury(
-            this.circuitContext,
-            this.xReserves
-        )
-
-        this.syncCircuitContext(context)
+        this.syncCircuitContext(circuitResults.context)
     }
 
     private calcSwapXToYFee(xIn: bigint): bigint {
@@ -214,11 +179,13 @@ export class Simulator {
     }
 
     private calcSwapXToYOut(xIn: bigint, xFee: bigint): bigint {
-        const initialK = this.xReserves.value*this.yReserves.value
+        const xLiquidity = this.getXLiquidity()
+        const yLiquidity = this.getYLiquidity()
+        const initialK = xLiquidity * yLiquidity
 
-        let yOut = this.yReserves.value - BigInt(Math.round(Number(initialK)/Number(this.xReserves.value + xIn - xFee)));
+        let yOut = yLiquidity - BigInt(Math.round(Number(initialK)/Number(xLiquidity + xIn - xFee)));
 
-        while (initialK > (this.yReserves.value - yOut)*(this.xReserves.value + xIn - xFee)) {
+        while (initialK > (yLiquidity - yOut)*(xLiquidity + xIn - xFee)) {
             yOut -= 1n
         }
 
@@ -237,11 +204,13 @@ export class Simulator {
     }
 
     private calcSwapYToXOut(yIn: bigint): bigint {
-        const initialK = this.xReserves.value*this.yReserves.value
+        const xLiquidity = this.getXLiquidity()
+        const yLiquidity = this.getYLiquidity()
+        const initialK = xLiquidity * yLiquidity
 
-        let xOutWithoutFee = this.xReserves.value - BigInt(Math.round(Number(initialK)/Number(this.yReserves.value + yIn)));
+        let xOutWithoutFee = xLiquidity - BigInt(Math.round(Number(initialK)/Number(yLiquidity + yIn)));
 
-        while (initialK > (this.xReserves.value - xOutWithoutFee)*(this.yReserves.value + yIn)) {
+        while (initialK > (xLiquidity - xOutWithoutFee)*(yLiquidity + yIn)) {
             xOutWithoutFee -= 1n
         }
 
@@ -250,46 +219,16 @@ export class Simulator {
         return xOutWithoutFee - xFee
     }
 
-    private syncCircuitContext(context: CircuitContext<unknown>) {
-        this.syncLPReserves(context)
-        this.syncXReserves(context)
-        this.syncYReserves(context)
-
-        // delete the currentZswapLocalstate
-        this.circuitContext = {
-            ...context,
-            currentZswapLocalState: emptyZswapLocalState(dummyTxSender)
-        }
-    }
-
-    private syncLPReserves(context: CircuitContext<unknown>) {
-         const newLPReserves = context.currentZswapLocalState.outputs.find(output => {
-            return !output.recipient.is_left && 
-                output.coinInfo.color.every((b, i) => b == this.lpReserves.color.at(i))
-        })
-
-        if (newLPReserves) {
-            this.lpReserves = {...this.lpReserves, ...newLPReserves.coinInfo}
-        }
-    }
-
-    private syncXReserves(context: CircuitContext<unknown>) {
-        const newXReserves = context.currentZswapLocalState.outputs.find(output => {
-            return !output.recipient.is_left && output.coinInfo.color.every((b, i) => b == this.xReserves.color.at(i))
-        })
-
-        if (newXReserves) {
-            this.xReserves = {...this.xReserves, ...newXReserves.coinInfo}
-        }
-    }
-
-    private syncYReserves(context: CircuitContext<unknown>) {1
-        const newYReserves = context.currentZswapLocalState.outputs.find(output => {
-            return !output.recipient.is_left && output.coinInfo.color.every((b, i) => b == this.yReserves.color.at(i))
-        })
-
-        if (newYReserves) {
-            this.yReserves = {...this.yReserves, ...newYReserves.coinInfo}
+    private syncCircuitContext(context: CircuitContext<PrivateState>) {
+        this.circuitContext = context
+        const ctx = context as any
+        
+        if (ctx.transactionContext && ctx.transactionContext.state) {
+            this.contractState = ctx.transactionContext.state
+        } else if (ctx.currentQueryContext && ctx.currentQueryContext.state) {
+            this.contractState = ctx.currentQueryContext.state
+        } else if (ctx.originalState) {
+            this.contractState = ctx.originalState
         }
     }
 }

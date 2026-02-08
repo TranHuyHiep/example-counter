@@ -98,7 +98,8 @@ const buildWalletFromSeed = async (config: Config, rli: Interface): Promise<Wall
 /** Prompt the user for a 24-word mnemonic and restore a wallet from it. */
 const buildWalletFromMnemonic = async (config: Config, rli: Interface): Promise<WalletContext> => {
   console.log('\nEnter your 24-word mnemonic phrase (space-separated):');
-  const mnemonic = await rli.question('> ');
+  // const mnemonic = await rli.question('> ');
+  const mnemonic = "wheat enable enter flower giraffe load stem fly grass visual alpha change sudden kid wealth noodle genre dad stumble boy recycle spray gather frog";
   return await api.buildWalletFromMnemonic(config, mnemonic.trim());
 };
 
@@ -114,7 +115,8 @@ const buildWallet = async (config: Config, rli: Interface): Promise<WalletContex
   }
 
   while (true) {
-    const choice = await rli.question(WALLET_MENU);
+    // const choice = await rli.question(WALLET_MENU);
+    const choice = '3';
     switch (choice.trim()) {
       case '1':
         return await api.buildFreshWallet(config);

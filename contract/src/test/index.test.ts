@@ -5,18 +5,6 @@ import { Simulator } from "./simulator"
 describe("liquidity init/add/remove without swaps", () => {
     const simulator = new Simulator(treasury)
 
-    it("xColor initialized at 9999...", () => {
-        const xColor = simulator.getXColor()
-
-        expect(xColor.every(b => b == 9))
-    })
-
-    it("yColor initialized at 10101010...", () => {
-        const xColor = simulator.getYColor()
-
-        expect(xColor.every(b => b == 10))
-    })
-
     it("fee initialized at 10", () => {
         expect(simulator.getFeeBps()).toBe(10n)
     })
@@ -57,19 +45,11 @@ describe("liquidity init/add/remove without swaps", () => {
         expect(simulator.getLPCirculatingSupply()).toBe(1000n)
     })
 
-    it("xLiquidity in reserves coin is 1000n", () => {
-        expect(simulator.xReserves.value).toBe(1000n)
-    })
-
     it("can add more liquidity", () => {
         simulator.addLiquidity({
             xIn: 900n,
             yIn: 900n
         })
-    })
-
-    it("xLiquidity in reserves coin is 1900n", () => {
-        expect(simulator.xReserves.value).toBe(1900n)
     })
 
     it("lp is 1900n after adding", () => {
@@ -159,12 +139,6 @@ describe("init liquidity with an X to Y swap", () => {
     it("Y liquidity decreased", () => {
         expect(simulator.getYLiquidity()).toBe(1_998_004n)
     })
-
-    it("can reward treasury", () => {
-        simulator.rewardTreasury()
-
-        expect(simulator.getXRewards()).toBe(0n)
-    })
 })
 
 describe("init liquidity with an Y to X swap", () => {
@@ -200,11 +174,5 @@ describe("init liquidity with an Y to X swap", () => {
 
     it("X liquidity decreased", () => {
         expect(simulator.getXLiquidity()).toBe(999_001n)
-    })
-
-    it("can reward treasury", () => {
-        simulator.rewardTreasury()
-
-        expect(simulator.getXRewards()).toBe(0n)
     })
 })
