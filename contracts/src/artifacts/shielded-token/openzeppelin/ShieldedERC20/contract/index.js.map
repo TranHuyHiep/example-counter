@@ -1,0 +1,8 @@
+{
+  "version": 3,
+  "file": "index.js",
+  "sourceRoot": "../../../../../../",
+  "sources": ["src/shielded-token/openzeppelin/ShieldedERC20.compact"],
+  "names": [],
+  "mappings": ";;;;;;;;;;;EAGA;;;;;;;;;;;;GAgNC;EAhND;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;GAgNC;;;;;;;;;;;;;;;;;;;;;;;;;"
+}

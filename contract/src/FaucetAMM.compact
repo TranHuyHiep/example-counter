@@ -1,6 +1,6 @@
 pragma language_version >= 0.20;
 
-// FaucetAMM contract using UNSHIELDED tokens
+// FaucetAMM contract using SHIELDED tokens (mintShieldedToken)
 // Combines a Faucet and an AMM for testing purposes
 
 import CompactStandardLibrary;
@@ -18,9 +18,15 @@ export ledger yLiquidity: Uint<128>;
 
 export ledger lpCirculatingSupply: Uint<128>;
 
+// Nonce management for shielded token minting
+// Each mint needs a unique nonce, managed via Counter + evolveNonce
+export ledger mintCounter: Counter;
+export ledger mintNonce: Bytes<32>;
+
 // Only initializes the ledger contract state but doesn't yet initialize the liquidity 
 constructor(
-    f: Uint<16>
+    f: Uint<16>,
+    initialNonce: Bytes<32>
 ) {
     // Fee must be less than 100% (10000 basis points)
     assert(f < 10000, "Fee too high");
@@ -30,32 +36,41 @@ constructor(
     xLiquidity = 0;
     yLiquidity = 0;
     lpCirculatingSupply = 0;
+    mintNonce = disclose(initialNonce);
 }
 
-// MINT FUNCTIONS - Using UNSHIELDED tokens (no nonce needed)
-export circuit mintTestTokensX(
-    xOut: Uint<64>, 
-    recipient: Either<ContractAddress, UserAddress>
+// Helper: evolve the nonce and mint a shielded token
+circuit doShieldedMint(
+    tokenName: Bytes<32>,
+    amount: Uint<64>,
+    recipient: Either<ZswapCoinPublicKey, ContractAddress>
 ): [] {
-    mintUnshieldedToken(
-        getXTokenName(),
-        disclose(xOut),
+    mintCounter.increment(1);
+    mintNonce = evolveNonce(mintCounter, mintNonce);
+    mintShieldedToken(
+        tokenName,
+        disclose(amount),
+        mintNonce,
         disclose(recipient)
     );
+}
+
+// MINT FUNCTIONS - Using SHIELDED tokens
+export circuit mintTestTokensX(
+    xOut: Uint<64>, 
+    recipient: Either<ZswapCoinPublicKey, ContractAddress>
+): [] {
+    doShieldedMint(getXTokenName(), xOut, recipient);
 }
 
 export circuit mintTestTokensY(
     yOut: Uint<64>,
-    recipient: Either<ContractAddress, UserAddress>
+    recipient: Either<ZswapCoinPublicKey, ContractAddress>
 ): [] {
-    mintUnshieldedToken(
-        getYTokenName(),
-        disclose(yOut),
-        disclose(recipient)
-    );
+    doShieldedMint(getYTokenName(), yOut, recipient);
 }
 
-// LIQUIDITY FUNCTIONS - Using UNSHIELDED tokens
+// LIQUIDITY FUNCTIONS - Using SHIELDED tokens
 // receive xIn
 // receive yIn
 // mint and send lpOut to recipient
@@ -63,18 +78,14 @@ export circuit initLiquidity(
     xIn: Uint<64>,
     yIn: Uint<64>,
     lpOut: Uint<64>,
-    recipient: Either<ContractAddress, UserAddress>
+    recipient: Either<ZswapCoinPublicKey, ContractAddress>
 ): [] {
     assert(lpCirculatingSupply == 0, "Already initialized");
     assert(lpOut*lpOut <= xIn*yIn, "Too many LP tokens taken");
 
-    // mint and send lp tokens to recipient (unshielded)
+    // mint and send lp tokens to recipient (shielded)
     lpCirculatingSupply = disclose(lpOut);
-    mintUnshieldedToken(
-        getLPTokenName(),
-        disclose(lpOut),
-        disclose(recipient)
-    );
+    doShieldedMint(getLPTokenName(), lpOut, recipient);
 
     // Note: For testing, we don't actually receive tokens (faucet mode)
     // Just update ledger state
@@ -89,7 +100,7 @@ export circuit addLiquidity(
     xIn: Uint<64>,
     yIn: Uint<64>,
     lpOut: Uint<64>,
-    recipient: Either<ContractAddress, UserAddress>
+    recipient: Either<ZswapCoinPublicKey, ContractAddress>
 ): [] {
     assert(lpCirculatingSupply > 0, "Not yet initialized");
 
@@ -106,13 +117,9 @@ export circuit addLiquidity(
         assert(yLhs <= yRhs, "Too many LP tokens taken (bound by yIn)");
     }
 
-    // send lp tokens to recipient (unshielded)
+    // send lp tokens to recipient (shielded)
     lpCirculatingSupply = lpCirculatingSupply + disclose(lpOut) as Uint<128>;
-    mintUnshieldedToken(
-        getLPTokenName(),
-        disclose(lpOut),
-        disclose(recipient)
-    );
+    doShieldedMint(getLPTokenName(), lpOut, recipient);
 
     // Update liquidity (faucet mode - no actual receive needed)
     xLiquidity = xLiquidity + xLiquidityAdded as Uint<128>;
@@ -123,7 +130,7 @@ export circuit removeLiquidity(
     lpIn: Uint<64>,
     xOut: Uint<64>,
     yOut: Uint<64>,
-    recipient: Either<ContractAddress, UserAddress>
+    recipient: Either<ZswapCoinPublicKey, ContractAddress>
 ): [] {
     const xLhs = xOut * lpCirculatingSupply;
     const xRhs = lpIn * xLiquidity;
@@ -136,28 +143,20 @@ export circuit removeLiquidity(
     // Update LP supply (faucet mode)
     lpCirculatingSupply = lpCirculatingSupply - disclose(lpIn);
 
-    // send x tokens to recipient
+    // send x tokens to recipient (shielded)
     xLiquidity = xLiquidity - disclose(xOut);
-    mintUnshieldedToken(
-        getXTokenName(),
-        disclose(xOut),
-        disclose(recipient)
-    );
+    doShieldedMint(getXTokenName(), xOut, recipient);
 
-    // send y tokens to recipient
+    // send y tokens to recipient (shielded)
     yLiquidity = yLiquidity - disclose(yOut);
-    mintUnshieldedToken(
-        getYTokenName(),
-        disclose(yOut),
-        disclose(recipient)
-    );
+    doShieldedMint(getYTokenName(), yOut, recipient);
 }
 
 export circuit swapXToY(
     xIn: Uint<64>,
     xFee: Uint<64>,
     yOut: Uint<64>,
-    recipient: Either<ContractAddress, UserAddress>
+    recipient: Either<ZswapCoinPublicKey, ContractAddress>
 ): [] {
     assert(xFee * 10000 >= xIn * feeBps, "Fee too low");
 
@@ -167,13 +166,9 @@ export circuit swapXToY(
     xRewards = xRewards + disclose(xFee) as Uint<128>;
     xLiquidity = xLiquidity + disclose(xIn - xFee) as Uint<128>;
 
-    // send y tokens to recipient
+    // send y tokens to recipient (shielded)
     yLiquidity = yLiquidity - disclose(yOut);
-    mintUnshieldedToken(
-        getYTokenName(),
-        disclose(yOut),
-        disclose(recipient)
-    );
+    doShieldedMint(getYTokenName(), yOut, recipient);
 
     const finalK = calcK(xLiquidity, yLiquidity);
 
@@ -184,20 +179,16 @@ export circuit swapYToX(
     yIn: Uint<64>,
     xFee: Uint<64>,
     xOut: Uint<64>,
-    recipient: Either<ContractAddress, UserAddress>
+    recipient: Either<ZswapCoinPublicKey, ContractAddress>
 ): [] {
     assert(xFee * (10000 - feeBps) >= xOut * feeBps, "Fee too low");
 
     const initialK = calcK(xLiquidity, yLiquidity);
 
-    // send x tokens to recipient
+    // send x tokens to recipient (shielded)
     xRewards = xRewards + disclose(xFee) as Uint<128>;
     xLiquidity = xLiquidity - disclose(xOut + xFee);
-    mintUnshieldedToken(
-        getXTokenName(),
-        disclose(xOut),
-        disclose(recipient)
-    );
+    doShieldedMint(getXTokenName(), xOut, recipient);
 
     // Update y liquidity (faucet mode)
     yLiquidity = yLiquidity + disclose(yIn) as Uint<128>;
@@ -215,36 +206,8 @@ circuit getXTokenName(): Bytes<32> {
     return pad(32, "Test token X");
 }
 
-circuit getXTokenColor(): Bytes<32> {
-    return tokenType(getXTokenName(), kernel.self());
-}
-
 circuit getYTokenName(): Bytes<32> {
     return pad(32, "Test token Y");
-}
-
-circuit getYTokenColor(): Bytes<32> {
-    return tokenType(getYTokenName(), kernel.self());
-}
-
-circuit getLPTokenColor(): Bytes<32> {
-    return tokenType(getLPTokenName(), kernel.self());
-}
-
-circuit getUnshieldedContractAddress(): Either<ContractAddress, UserAddress> {
-    return Either<ContractAddress, UserAddress> {
-        true,
-        kernel.self(),
-        UserAddress{bytes: pad(32, "")}
-    };
-}
-
-circuit getShieldedContractAddress(): Either<ZswapCoinPublicKey, ContractAddress> {
-    return Either<ZswapCoinPublicKey, ContractAddress> {
-        false,
-        ZswapCoinPublicKey{bytes: pad(32, "")},
-        kernel.self()
-    };
 }
 
 circuit calcK(x: Uint<128>, y: Uint<128>): Uint<248> {

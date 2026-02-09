@@ -1,0 +1,207 @@
+{
+  "circuits": [
+    {
+      "name": "AccessControl_hashUserRole",
+      "pure": true,
+      "arguments": [
+        {
+          "name": "user",
+          "type": {
+            "type-name": "Struct",
+            "name": "ZswapCoinPublicKey",
+            "elements": [
+              {
+                "name": "bytes",
+                "type": {
+                  "type-name": "Bytes",
+                  "length": 32
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "role",
+          "type": {
+            "type-name": "Enum",
+            "name": "Role",
+            "elements": [
+              "Admin",
+              "Lp",
+              "Trader",
+              "None"
+            ]
+          }
+        }
+      ],
+      "result-type": {
+        "type-name": "Bytes",
+        "length": 32
+      }
+    },
+    {
+      "name": "testGrantRole",
+      "pure": false,
+      "arguments": [
+        {
+          "name": "user",
+          "type": {
+            "type-name": "Struct",
+            "name": "ZswapCoinPublicKey",
+            "elements": [
+              {
+                "name": "bytes",
+                "type": {
+                  "type-name": "Bytes",
+                  "length": 32
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "role",
+          "type": {
+            "type-name": "Enum",
+            "name": "Role",
+            "elements": [
+              "Admin",
+              "Lp",
+              "Trader",
+              "None"
+            ]
+          }
+        }
+      ],
+      "result-type": {
+        "type-name": "Tuple",
+        "types": [
+        ]
+      }
+    }
+  ],
+  "witnesses": [
+    {
+      "name": "wit_updateRole",
+      "arguments": [
+        {
+          "name": "userRoleCommit",
+          "type": {
+            "type-name": "Bytes",
+            "length": 32
+          }
+        },
+        {
+          "name": "role",
+          "type": {
+            "type-name": "Enum",
+            "name": "Role",
+            "elements": [
+              "Admin",
+              "Lp",
+              "Trader",
+              "None"
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "type": {
+            "type-name": "Uint",
+            "maxval": 18446744073709551615
+          }
+        }
+      ],
+      "result type": {
+        "type-name": "Tuple",
+        "types": [
+        ]
+      }
+    },
+    {
+      "name": "wit_getRoleMerklePath",
+      "arguments": [
+        {
+          "name": "userRoleCommit",
+          "type": {
+            "type-name": "Bytes",
+            "length": 32
+          }
+        }
+      ],
+      "result type": {
+        "type-name": "Struct",
+        "name": "Maybe",
+        "elements": [
+          {
+            "name": "is_some",
+            "type": {
+              "type-name": "Boolean"
+            }
+          },
+          {
+            "name": "value",
+            "type": {
+              "type-name": "Struct",
+              "name": "MerkleTreePath",
+              "elements": [
+                {
+                  "name": "leaf",
+                  "type": {
+                    "type-name": "Bytes",
+                    "length": 32
+                  }
+                },
+                {
+                  "name": "path",
+                  "type": {
+                    "type-name": "Vector",
+                    "length": 10,
+                    "type": {
+                      "type-name": "Struct",
+                      "name": "MerkleTreePathEntry",
+                      "elements": [
+                        {
+                          "name": "sibling",
+                          "type": {
+                            "type-name": "Struct",
+                            "name": "MerkleTreeDigest",
+                            "elements": [
+                              {
+                                "name": "field",
+                                "type": {
+                                  "type-name": "Field"
+                                }
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "name": "goes_left",
+                          "type": {
+                            "type-name": "Boolean"
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "wit_getSecretKey",
+      "arguments": [
+      ],
+      "result type": {
+        "type-name": "Bytes",
+        "length": 32
+      }
+    }
+  ],
+  "contracts": [
+  ]
+}

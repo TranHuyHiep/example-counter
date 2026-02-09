@@ -13,14 +13,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { type WalletContext } from './api';
+import { type WalletContext } from './api.js';
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface, type Interface } from 'node:readline/promises';
 import { type Logger } from 'pino';
 import { type StartedDockerComposeEnvironment, type DockerComposeEnvironment } from 'testcontainers';
-import { type FaucetAMMProviders, type DeployedFaucetAMMContract } from './common-types';
-import { type Config, StandaloneConfig } from './config';
-import * as api from './api';
+import { type FaucetAMMProviders, type DeployedFaucetAMMContract } from './common-types.js';
+import { type Config, StandaloneConfig } from './config.js';
+import * as api from './api.js';
 
 let logger: Logger;
 
@@ -246,7 +246,7 @@ const mainLoop = async (providers: FaucetAMMProviders, walletCtx: api.WalletCont
         try {
           const amount = await rli.question('Enter amount of X tokens to mint: ');
           await api.withStatus('Minting X tokens (shielded)', () => 
-            api.mintTokensX(mintContract, BigInt(amount), walletCtx.wallet)
+            api.mintTokensX(providers, mintContract, BigInt(amount), walletCtx.wallet)
           );
           console.log(`  ✓ Minted ${amount} X tokens (shielded)\n`);
         } catch (e) {
@@ -258,7 +258,7 @@ const mainLoop = async (providers: FaucetAMMProviders, walletCtx: api.WalletCont
         try {
           const amount = await rli.question('Enter amount of Y tokens to mint: ');
           await api.withStatus('Minting Y tokens (shielded)', () => 
-            api.mintTokensY(mintContract, BigInt(amount), walletCtx.wallet)
+            api.mintTokensY(providers, mintContract, BigInt(amount), walletCtx.wallet)
           );
           console.log(`  ✓ Minted ${amount} Y tokens (shielded)\n`);
         } catch (e) {
@@ -272,7 +272,7 @@ const mainLoop = async (providers: FaucetAMMProviders, walletCtx: api.WalletCont
           const yIn = await rli.question('Enter Y tokens to add: ');
           const lpOut = await rli.question('Enter LP tokens to receive: ');
           await api.withStatus('Initializing liquidity', () =>
-            api.initLiquidity(mintContract, BigInt(xIn), BigInt(yIn), BigInt(lpOut), walletCtx.wallet)
+            api.initLiquidity(providers, mintContract, BigInt(xIn), BigInt(yIn), BigInt(lpOut), walletCtx.wallet)
           );
           console.log(`  ✓ Liquidity initialized: ${xIn} X + ${yIn} Y -> ${lpOut} LP\n`);
         } catch (e) {
@@ -286,7 +286,7 @@ const mainLoop = async (providers: FaucetAMMProviders, walletCtx: api.WalletCont
           const yIn = await rli.question('Enter Y tokens to add: ');
           const lpOut = await rli.question('Enter LP tokens to receive: ');
           await api.withStatus('Adding liquidity', () =>
-            api.addLiquidity(mintContract, BigInt(xIn), BigInt(yIn), BigInt(lpOut), walletCtx.wallet)
+            api.addLiquidity(providers, mintContract, BigInt(xIn), BigInt(yIn), BigInt(lpOut), walletCtx.wallet)
           );
           console.log(`  ✓ Added liquidity: ${xIn} X + ${yIn} Y -> ${lpOut} LP\n`);
         } catch (e) {
@@ -300,7 +300,7 @@ const mainLoop = async (providers: FaucetAMMProviders, walletCtx: api.WalletCont
           const xOut = await rli.question('Enter X tokens to receive: ');
           const yOut = await rli.question('Enter Y tokens to receive: ');
           await api.withStatus('Removing liquidity', () =>
-            api.removeLiquidity(mintContract, BigInt(lpIn), BigInt(xOut), BigInt(yOut), walletCtx.wallet)
+            api.removeLiquidity(providers, mintContract, BigInt(lpIn), BigInt(xOut), BigInt(yOut), walletCtx.wallet)
           );
           console.log(`  ✓ Removed liquidity: ${lpIn} LP -> ${xOut} X + ${yOut} Y\n`);
         } catch (e) {
@@ -314,7 +314,7 @@ const mainLoop = async (providers: FaucetAMMProviders, walletCtx: api.WalletCont
           const xFee = await rli.question('Enter fee amount (X tokens): ');
           const yOut = await rli.question('Enter Y tokens to receive: ');
           await api.withStatus('Swapping X to Y', () =>
-            api.swapXToY(mintContract, BigInt(xIn), BigInt(xFee), BigInt(yOut), walletCtx.wallet)
+            api.swapXToY(providers, mintContract, BigInt(xIn), BigInt(xFee), BigInt(yOut), walletCtx.wallet)
           );
           console.log(`  ✓ Swapped ${xIn} X -> ${yOut} Y (fee: ${xFee})\n`);
         } catch (e) {
@@ -328,7 +328,7 @@ const mainLoop = async (providers: FaucetAMMProviders, walletCtx: api.WalletCont
           const xFee = await rli.question('Enter fee amount (X tokens): ');
           const xOut = await rli.question('Enter X tokens to receive: ');
           await api.withStatus('Swapping Y to X', () =>
-            api.swapYToX(mintContract, BigInt(yIn), BigInt(xFee), BigInt(xOut), walletCtx.wallet)
+            api.swapYToX(providers, mintContract, BigInt(yIn), BigInt(xFee), BigInt(xOut), walletCtx.wallet)
           );
           console.log(`  ✓ Swapped ${yIn} Y -> ${xOut} X (fee: ${xFee})\n`);
         } catch (e) {

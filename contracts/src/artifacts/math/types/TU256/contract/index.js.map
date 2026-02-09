@@ -1,0 +1,8 @@
+{
+  "version": 3,
+  "file": "index.js",
+  "sourceRoot": "../../../../../../",
+  "sources": ["src/math/types/TU256.compact"],
+  "names": [],
+  "mappings": ";;;;;;;;;;;EAGA;;;;;;;;;;;;GAmCC;EAnCD;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;GAmCC;;;;;;;;;;;;;;;;;;;;;;;;;"
+}

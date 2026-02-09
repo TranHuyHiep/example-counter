@@ -14,4 +14,4 @@
 // limitations under the License.
 
 export * as FaucetAMM from "./managed/FaucetAMM/contract/index.js";
-export * from "./witnesses";
+export * from "./witnesses.js";

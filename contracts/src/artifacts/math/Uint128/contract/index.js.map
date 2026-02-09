@@ -1,0 +1,8 @@
+{
+  "version": 3,
+  "file": "index.js",
+  "sourceRoot": "../../../../../",
+  "sources": ["src/math/Uint128.compact"],
+  "names": [],
+  "mappings": ";;;;;;;;;;;EAGA;;;;;;;;;;;;GAk3CC;EAl3CD;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;GAk3CC;;;;;;;;;;;;;;;;;;;;;;;;;"
+}

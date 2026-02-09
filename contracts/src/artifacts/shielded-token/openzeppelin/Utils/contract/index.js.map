@@ -1,0 +1,8 @@
+{
+  "version": 3,
+  "file": "index.js",
+  "sourceRoot": "../../../../../../",
+  "sources": ["src/shielded-token/openzeppelin/Utils.compact"],
+  "names": [],
+  "mappings": ";;;;;;;;;;;EAGA;;;;;;;;;;;;GAuGC;EAvGD;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;GAuGC;;;;;;;;;;;;;;;;;;;;;;;;;"
+}

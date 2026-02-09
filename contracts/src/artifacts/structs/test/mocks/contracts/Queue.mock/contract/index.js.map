@@ -1,0 +1,8 @@
+{
+  "version": 3,
+  "file": "index.js",
+  "sourceRoot": "../../../../../../../../",
+  "sources": ["src/structs/test/mocks/contracts/Queue.mock.compact", "src/structs/test/mocks/contracts/../../../Queue.compact", "compiler/standard-library.compact"],
+  "names": [],
+  "mappings": ";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;EAGA;;;;;;;;;;MAQA,AAAA,OAEC;;;;;cAFsB,MAAc;;;;;;;;;;;;;;;;;;yCAAd,MAAc;;;;;;;oEAAd,MAAc;;;OAEpC;MAED,AAAA,OAEC;;;;;;;;;;;;;;;;;;;;;;OAAA;MAED,AAAA,OAEC;;;;;;;;;;;;;;;;;;;;;;OAAA;;;;;;;GACA;EAnBD;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;ICgFE;;;;;;;;;;yEAAsC;IAKtC;;;;;;;;;yEAA4B;IAK5B;;;;;;;;;yEAA4B;;;;;;;GDvE7B;EECD,AAAA,QAAuB,0CACkB;EAGzC,AAAA;ED0EE,AAAA,UAOC,4BAPsB,MAAO;UAGtB,YAAiC;mEAChC;;;;;;;;;;;wIAAI;2CAAI,YAAU;;UACzB,KAAK,2BAAQ;;;;;;;;;;;+GAAI;IAAjB;;;;;;;;;;2HAAA,KAAK;;;2HAAuB,MAAI;;;wEAA3B;UACL,KAAI;IAAJ;;;;;;;;;;6FAAA,KAAI;;;;wEAAA;;GACL;EAYD,AAAA,UAeC;;;;YAXU,YAAiC;qEAChC;;;;;;;;;;;0IAAI;6CAAI,YAAU;;UACX,KAAK;YAAb,OAA0B,oCAAL;;;;;;;;;;;4HAAI;+CAAjB;;;;;;;;;;;;;;0IAAA,KAAK;;;oHAAA;YACnB,KAAK,2BAAQ;;;;;;;;;;;iHAAI;MAAjB;;;;;;;;;;6HAAA,KAAK;;;0EAAA;YACL,KAAI;MAAJ;;;;;;;;;;+FAAA,KAAI;;;;0EAAA;0BAKW,OAAK;;GAExB;EASD,AAAA,UAEC;iDADQ;;;;;;;;;;;sHAAI;iDAAI;;;;;;;;;;;sHAAI;GACpB;EDvIH,AAAA,UAEC,4BAFsB,MAAc;sDACd,MAAI;GAC1B;EAED,AAAA,UAEC;;GAAA;EAED,AAAA,UAEC;;GAAA;;;;;;;;;;;;;;;;;;;;;;;;;;;;IC8DC;;;;;uCAAA;;;;;;;;;;;;;;;;4GAAsC;;;;;;uCAAtC;;;;;;;;;;;;4GAAsC;;;;;;;;;;;;;;uCAAtC;;;;;;;;;;;;;;;4GAAsC;;;;;;;;;;;;;;uCAAtC;;;;;;;;;;;;;;;;;4GAAsC;;;;;;;;;KAAA;IAKtC;qCAAA;;;;;;;;;;;0GAA4B;KAAA;IAK5B;qCAAA;;;;;;;;;;;0GAA4B;KAAA;;;;;;;;;;"
+}
