@@ -69,7 +69,7 @@ globalThis.WebSocket = WebSocket;
 
 // Pre-compile contracts
 const faucetAMMCompiledContract = CompiledContract.make('FaucetAMM', FaucetAMM.Contract<FaucetAMMPrivateState>).pipe(
-  CompiledContract.withVacantWitnesses,
+  CompiledContract.withWitnesses(witnesses),
   CompiledContract.withCompiledFileAssets(contractConfig.zkConfigPath),
 );
 
@@ -79,6 +79,11 @@ export interface WalletContext {
   dustSecretKey: ledger.DustSecretKey;
   unshieldedKeystore: UnshieldedKeystore;
 }
+
+// Debug: log witnesses at module load time
+console.log('[API] Module loading - witnesses keys:', Object.keys(witnesses));
+console.log('[API] divU128Locally type:', typeof witnesses.divU128Locally);
+console.log('[API] divUint128Locally type:', typeof witnesses.divUint128Locally);
 
 export const faucetAMMContractInstance: FaucetAMMContract = new FaucetAMM.Contract(witnesses);
 
@@ -131,6 +136,11 @@ const callCircuitAsync = async (
   }
 
   logger.info(`Transaction ${txId} finalized in block ${finalizedTxData.blockHeight}`);
+  
+  // Wait a moment for indexer/wallet to sync new merkle tree state
+  logger.info('Waiting for wallet sync...');
+  await new Promise(resolve => setTimeout(resolve, 3000));
+  
   return finalizedTxData;
 };
 
@@ -260,8 +270,9 @@ export const initLiquidity = async (
   logger.info(`Initializing liquidity pool: ${xIn} X + ${yIn} Y -> ${lpOut} LP...`);
   
   const recipient = await buildShieldedRecipient(wallet);
+  const nonce = randomBytes(32);
   
-  const finalizedTxData = await callCircuitAsync(providers, faucetAMMContract, 'initLiquidity', [xIn, yIn, lpOut, recipient]);
+  const finalizedTxData = await callCircuitAsync(providers, faucetAMMContract, 'initLiquidity', [xIn, yIn, lpOut, recipient, nonce]);
   logger.info(`initLiquidity finalized in block ${finalizedTxData.blockHeight}`);
   
   // Update local pool tracker
@@ -284,22 +295,38 @@ export const addLiquidity = async (
   lpOut: bigint,
   wallet: WalletFacade,
 ): Promise<FinalizedTxData> => {
+  const contractAddress = faucetAMMContract.deployTxData.public.contractAddress;
+  const tracker = poolTrackers.get(contractAddress);
+  
+  if (!tracker) {
+    throw new Error('Pool not initialized - call initLiquidity first');
+  }
+
   logger.info(`Adding liquidity: ${xIn} X + ${yIn} Y -> ${lpOut} LP...`);
   
-  const recipient = await buildShieldedRecipient(wallet);
+  // Create pool coin placeholders
+  const xCoin = createPoolCoinPlaceholder(9, tracker.xLiquidity);
+  const yCoin = createPoolCoinPlaceholder(10, tracker.yLiquidity);
   
-  const finalizedTxData = await callCircuitAsync(providers, faucetAMMContract, 'addLiquidity', [xIn, yIn, lpOut, recipient]);
+  const recipient = await buildShieldedRecipient(wallet);
+  const nonce = randomBytes(32);
+  
+  const finalizedTxData = await callCircuitAsync(providers, faucetAMMContract, 'addLiquidity', [
+    xCoin,
+    yCoin,
+    xIn,
+    yIn,
+    lpOut,
+    recipient,
+    nonce,
+  ]);
   logger.info(`addLiquidity finalized in block ${finalizedTxData.blockHeight}`);
   
   // Update local pool tracker
-  const contractAddress = faucetAMMContract.deployTxData.public.contractAddress;
-  const tracker = poolTrackers.get(contractAddress);
-  if (tracker) {
-    tracker.xLiquidity += xIn;
-    tracker.yLiquidity += yIn;
-    tracker.lpCirculatingSupply += lpOut;
-    logger.info(`Pool tracker updated: xLiq=${tracker.xLiquidity}, yLiq=${tracker.yLiquidity}, lpSupply=${tracker.lpCirculatingSupply}`);
-  }
+  tracker.xLiquidity += xIn;
+  tracker.yLiquidity += yIn;
+  tracker.lpCirculatingSupply += lpOut;
+  logger.info(`Pool tracker updated: xLiq=${tracker.xLiquidity}, yLiq=${tracker.yLiquidity}, lpSupply=${tracker.lpCirculatingSupply}`);
   
   return finalizedTxData;
 };
@@ -312,50 +339,95 @@ export const removeLiquidity = async (
   yOut: bigint,
   wallet: WalletFacade,
 ): Promise<FinalizedTxData> => {
+  const contractAddress = faucetAMMContract.deployTxData.public.contractAddress;
+  const tracker = poolTrackers.get(contractAddress);
+  
+  if (!tracker) {
+    throw new Error('Pool not initialized - call initLiquidity first');
+  }
+
   logger.info(`Removing liquidity: ${lpIn} LP -> ${xOut} X + ${yOut} Y...`);
   
-  const recipient = await buildShieldedRecipient(wallet);
+  // Create pool coin placeholders
+  const xCoin = createPoolCoinPlaceholder(9, tracker.xLiquidity);
+  const yCoin = createPoolCoinPlaceholder(10, tracker.yLiquidity);
   
-  const finalizedTxData = await callCircuitAsync(providers, faucetAMMContract, 'removeLiquidity', [lpIn, xOut, yOut, recipient]);
+  const recipient = await buildShieldedRecipient(wallet);
+  const nonce = randomBytes(32);
+  
+  const finalizedTxData = await callCircuitAsync(providers, faucetAMMContract, 'removeLiquidity', [
+    xCoin,
+    yCoin,
+    lpIn,
+    xOut,
+    yOut,
+    recipient,
+    nonce,
+  ]);
   logger.info(`removeLiquidity finalized in block ${finalizedTxData.blockHeight}`);
   
   // Update local pool tracker
-  const contractAddress = faucetAMMContract.deployTxData.public.contractAddress;
-  const tracker = poolTrackers.get(contractAddress);
-  if (tracker) {
-    tracker.xLiquidity -= xOut;
-    tracker.yLiquidity -= yOut;
-    tracker.lpCirculatingSupply -= lpIn;
-    logger.info(`Pool tracker updated: xLiq=${tracker.xLiquidity}, yLiq=${tracker.yLiquidity}, lpSupply=${tracker.lpCirculatingSupply}`);
-  }
+  tracker.xLiquidity -= xOut;
+  tracker.yLiquidity -= yOut;
+  tracker.lpCirculatingSupply -= lpIn;
+  logger.info(`Pool tracker updated: xLiq=${tracker.xLiquidity}, yLiq=${tracker.yLiquidity}, lpSupply=${tracker.lpCirculatingSupply}`);
   
   return finalizedTxData;
 };
+
+// Helper: create pool coin placeholder (runtime will qualify from contract ledger)
+const createPoolCoinPlaceholder = (colorByte: number, value: bigint) => ({
+  nonce: new Uint8Array(32),
+  color: new Uint8Array(32).fill(colorByte),
+  value,
+  mt_index: 0n,
+});
 
 export const swapXToY = async (
   providers: FaucetAMMProviders,
   faucetAMMContract: DeployedFaucetAMMContract,
   xIn: bigint,
-  xFee: bigint,
-  yOut: bigint,
   wallet: WalletFacade,
 ): Promise<FinalizedTxData> => {
-  logger.info(`Swapping ${xIn} X (fee: ${xFee}) -> ${yOut} Y...`);
-  
-  const recipient = await buildShieldedRecipient(wallet);
-  
-  const finalizedTxData = await callCircuitAsync(providers, faucetAMMContract, 'swapXToY', [xIn, xFee, yOut, recipient]);
-  logger.info(`swapXToY finalized in block ${finalizedTxData.blockHeight}`);
-  
-  // Update local pool tracker
   const contractAddress = faucetAMMContract.deployTxData.public.contractAddress;
   const tracker = poolTrackers.get(contractAddress);
-  if (tracker) {
-    tracker.xLiquidity += xIn;
-    tracker.yLiquidity -= yOut;
-    tracker.xRewards += xFee;
-    logger.info(`Pool tracker updated: xLiq=${tracker.xLiquidity}, yLiq=${tracker.yLiquidity}, xRewards=${tracker.xRewards}`);
+  
+  if (!tracker) {
+    throw new Error('Pool not initialized - call initLiquidity first');
   }
+
+  // Calculate expected yOut for display
+  const feeBps = tracker.feeBps;
+  const xInAfterFee = (xIn * (10000n - feeBps)) / 10000n;
+  const yOutEstimate = (tracker.yLiquidity * xInAfterFee) / (tracker.xLiquidity + xInAfterFee);
+  const minYOut = (yOutEstimate * 95n) / 100n; // 5% slippage tolerance
+
+  logger.info(`Swapping ${xIn} X -> ~${yOutEstimate} Y (min: ${minYOut}, fee: ${(xIn * feeBps) / 10000n})...`);
+  
+  // Create pool coin placeholders with CURRENT state values
+  // X pool coin contains both liquidity AND rewards
+  const xPoolCoin = createPoolCoinPlaceholder(9, tracker.xLiquidity + tracker.xRewards);
+  const yPoolCoin = createPoolCoinPlaceholder(10, tracker.yLiquidity);
+  
+  const recipient = await buildShieldedRecipient(wallet);
+  const nonce = randomBytes(32);
+  
+  const finalizedTxData = await callCircuitAsync(providers, faucetAMMContract, 'swapXToY', [
+    xPoolCoin,
+    yPoolCoin,
+    xIn,
+    minYOut,
+    recipient,
+    nonce,
+  ]);
+  logger.info(`swapXToY finalized in block ${finalizedTxData.blockHeight}`);
+  
+  // Update local pool tracker with actual values
+  const xFee = (xIn * feeBps) / 10000n;
+  tracker.xLiquidity += xInAfterFee;
+  tracker.yLiquidity -= yOutEstimate; // approximate, real value from chain
+  tracker.xRewards += xFee;
+  logger.info(`Pool tracker updated: xLiq=${tracker.xLiquidity}, yLiq=${tracker.yLiquidity}, xRewards=${tracker.xRewards}`);
   
   return finalizedTxData;
 };
@@ -364,26 +436,46 @@ export const swapYToX = async (
   providers: FaucetAMMProviders,
   faucetAMMContract: DeployedFaucetAMMContract,
   yIn: bigint,
-  xFee: bigint,
-  xOut: bigint,
   wallet: WalletFacade,
 ): Promise<FinalizedTxData> => {
-  logger.info(`Swapping ${yIn} Y -> ${xOut} X (fee: ${xFee})...`);
-  
-  const recipient = await buildShieldedRecipient(wallet);
-  
-  const finalizedTxData = await callCircuitAsync(providers, faucetAMMContract, 'swapYToX', [yIn, xFee, xOut, recipient]);
-  logger.info(`swapYToX finalized in block ${finalizedTxData.blockHeight}`);
-  
-  // Update local pool tracker
   const contractAddress = faucetAMMContract.deployTxData.public.contractAddress;
   const tracker = poolTrackers.get(contractAddress);
-  if (tracker) {
-    tracker.xLiquidity -= xOut;
-    tracker.yLiquidity += yIn;
-    tracker.xRewards += xFee;
-    logger.info(`Pool tracker updated: xLiq=${tracker.xLiquidity}, yLiq=${tracker.yLiquidity}, xRewards=${tracker.xRewards}`);
+  
+  if (!tracker) {
+    throw new Error('Pool not initialized - call initLiquidity first');
   }
+
+  // Calculate expected xOut for display
+  const xOutGross = (tracker.xLiquidity * yIn) / (tracker.yLiquidity + yIn);
+  const feeBps = tracker.feeBps;
+  const xOutEstimate = (xOutGross * (10000n - feeBps)) / 10000n;
+  const minXOut = (xOutEstimate * 95n) / 100n; // 5% slippage tolerance
+
+  logger.info(`Swapping ${yIn} Y -> ~${xOutEstimate} X (min: ${minXOut}, fee: ${xOutGross - xOutEstimate})...`);
+  
+  // Create pool coin placeholders (runtime will qualify from ledger)
+  const xPoolCoin = createPoolCoinPlaceholder(9, tracker.xLiquidity);
+  const yPoolCoin = createPoolCoinPlaceholder(10, tracker.yLiquidity);
+  
+  const recipient = await buildShieldedRecipient(wallet);
+  const nonce = randomBytes(32);
+  
+  const finalizedTxData = await callCircuitAsync(providers, faucetAMMContract, 'swapYToX', [
+    xPoolCoin,
+    yPoolCoin,
+    yIn,
+    minXOut,
+    recipient,
+    nonce,
+  ]);
+  logger.info(`swapYToX finalized in block ${finalizedTxData.blockHeight}`);
+  
+  // Update local pool tracker with actual values
+  const xFee = xOutGross - xOutEstimate;
+  tracker.xLiquidity -= xOutEstimate;
+  tracker.yLiquidity += yIn;
+  tracker.xRewards += xFee;
+  logger.info(`Pool tracker updated: xLiq=${tracker.xLiquidity}, yLiq=${tracker.yLiquidity}, xRewards=${tracker.xRewards}`);
   
   return finalizedTxData;
 };
@@ -403,6 +495,9 @@ interface PoolStateTracker {
   xLiquidity: bigint;
   yLiquidity: bigint;
   lpCirculatingSupply: bigint;
+  // Track actual pool coins from transaction outputs
+  xPoolCoin?: { nonce: Uint8Array; color: Uint8Array; value: bigint; mt_index: bigint };
+  yPoolCoin?: { nonce: Uint8Array; color: Uint8Array; value: bigint; mt_index: bigint };
 }
 
 const poolTrackers = new Map<string, PoolStateTracker>();
@@ -414,6 +509,8 @@ export const initPoolTracker = (contractAddress: string, feeBps: bigint) => {
     xLiquidity: 0n,
     yLiquidity: 0n,
     lpCirculatingSupply: 0n,
+    xPoolCoin: undefined,
+    yPoolCoin: undefined,
   });
 };
 

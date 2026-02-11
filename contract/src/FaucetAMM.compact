@@ -1,9 +1,17 @@
 pragma language_version >= 0.20;
 
-// FaucetAMM contract using SHIELDED tokens (mintShieldedToken)
-// Combines a Faucet and an AMM for testing purposes
+// FaucetAMM contract — SHIELDED tokens only
+// Pattern:
+//   - receiveShielded(coin): creates ZswapOutput owned by contract
+//       => wallet's balanceTx auto-spends user's coin to cover the imbalance
+//   - coins.insertCoin(key, coin, contractAddr): stores coin in contract ledger
+//   - createZswapInput(qualifiedCoin): spends a coin held by contract
+//   - createZswapOutput(coin, recipient): creates ZswapOutput for user
+//   - sendImmediateShielded(coin, recipient, amount): spend received coin and send to recipient
+//   - mintShieldedToken: mint new tokens
 
 import CompactStandardLibrary;
+import { div } from "./math/Uint128";
 
 // Swap fee in basis points (e.g. 10 = 0.1%)
 export ledger feeBps: Uint<16>;
@@ -18,19 +26,19 @@ export ledger yLiquidity: Uint<128>;
 
 export ledger lpCirculatingSupply: Uint<128>;
 
+// Contract-owned coin storage for pool liquidity
+// Key 0 = X liquidity coin, Key 1 = Y liquidity coin
+export ledger coins: Map<Uint<8>, QualifiedShieldedCoinInfo>;
+
 // Nonce management for shielded token minting
-// Each mint needs a unique nonce, managed via Counter + evolveNonce
 export ledger mintCounter: Counter;
 export ledger mintNonce: Bytes<32>;
 
-// Only initializes the ledger contract state but doesn't yet initialize the liquidity 
 constructor(
     f: Uint<16>,
     initialNonce: Bytes<32>
 ) {
-    // Fee must be less than 100% (10000 basis points)
     assert(f < 10000, "Fee too high");
-
     feeBps = disclose(f);
     xRewards = 0;
     xLiquidity = 0;
@@ -39,7 +47,7 @@ constructor(
     mintNonce = disclose(initialNonce);
 }
 
-// Helper: evolve the nonce and mint a shielded token
+// Helper: evolve nonce and mint a shielded token
 circuit doShieldedMint(
     tokenName: Bytes<32>,
     amount: Uint<64>,
@@ -55,9 +63,15 @@ circuit doShieldedMint(
     );
 }
 
-// MINT FUNCTIONS - Using SHIELDED tokens
+// Helper: get contract's shielded address (right = ContractAddress)
+circuit getShieldedContractAddress(): Either<ZswapCoinPublicKey, ContractAddress> {
+    return right<ZswapCoinPublicKey, ContractAddress>(kernel.self());
+}
+
+// ============ MINT FUNCTIONS (faucet) ============
+
 export circuit mintTestTokensX(
-    xOut: Uint<64>, 
+    xOut: Uint<64>,
     recipient: Either<ZswapCoinPublicKey, ContractAddress>
 ): [] {
     doShieldedMint(getXTokenName(), xOut, recipient);
@@ -70,133 +84,311 @@ export circuit mintTestTokensY(
     doShieldedMint(getYTokenName(), yOut, recipient);
 }
 
-// LIQUIDITY FUNCTIONS - Using SHIELDED tokens
-// receive xIn
-// receive yIn
-// mint and send lpOut to recipient
+// ============ LIQUIDITY FUNCTIONS ============
+
+// Initialize the liquidity pool.
+// User sends xIn X tokens + yIn Y tokens, receives lpOut LP tokens.
+// receiveShielded creates outputs owned by contract => wallet's balanceTx
+// auto-spends user's coins to cover the X and Y imbalance.
 export circuit initLiquidity(
     xIn: Uint<64>,
     yIn: Uint<64>,
     lpOut: Uint<64>,
-    recipient: Either<ZswapCoinPublicKey, ContractAddress>
+    recipient: Either<ZswapCoinPublicKey, ContractAddress>,
+    nonce: Bytes<32>
 ): [] {
     assert(lpCirculatingSupply == 0, "Already initialized");
     assert(lpOut*lpOut <= xIn*yIn, "Too many LP tokens taken");
 
-    // mint and send lp tokens to recipient (shielded)
+    // Mint LP tokens to recipient
     lpCirculatingSupply = disclose(lpOut);
     doShieldedMint(getLPTokenName(), lpOut, recipient);
 
-    // Note: For testing, we don't actually receive tokens (faucet mode)
-    // Just update ledger state
+    const contractAddress = getShieldedContractAddress();
+
+    // Receive X liquidity into contract
     xLiquidity = disclose(xIn);
+    const xCoin = ShieldedCoinInfo {
+        pad(32, ""),
+        getXTokenColor(),
+        xLiquidity
+    };
+    receiveShielded(xCoin);
+    coins.insertCoin(0, xCoin, contractAddress);
+
+    // Receive Y liquidity into contract
     yLiquidity = disclose(yIn);
+    const yCoin = ShieldedCoinInfo {
+        pad(32, ""),
+        getYTokenColor(),
+        yLiquidity
+    };
+    receiveShielded(yCoin);
+    coins.insertCoin(1, yCoin, contractAddress);
 }
 
-// receive xLiquidity + xIn
-// receive yLiquidity + yIn
-// mint and send lpOut to recipient
+// Add liquidity to existing pool.
+// Spend old pool coins (createZswapInput), receive new combined coins (receiveShielded).
+// Wallet auto-spends user's additional X and Y coins to cover the increased amounts.
 export circuit addLiquidity(
     xIn: Uint<64>,
     yIn: Uint<64>,
     lpOut: Uint<64>,
-    recipient: Either<ZswapCoinPublicKey, ContractAddress>
+    recipient: Either<ZswapCoinPublicKey, ContractAddress>,
+    nonce: Bytes<32>
 ): [] {
     assert(lpCirculatingSupply > 0, "Not yet initialized");
+
+    // Get pool coins from ledger storage
+    const xCoin = coins.get(0 as Uint<8>);
+    const yCoin = coins.get(1 as Uint<8>);
 
     const xLiquidityAdded = disclose(xIn);
     const yLiquidityAdded = disclose(yIn);
 
     if (xLiquidityAdded * yLiquidity < yLiquidityAdded * xLiquidity) {
-        const xLhs = lpOut * xLiquidity;
-        const xRhs = xLiquidityAdded * lpCirculatingSupply;
-        assert(xLhs <= xRhs, "Too many LP tokens taken (bound by xIn)");
+        assert(lpOut * xLiquidity <= xLiquidityAdded * lpCirculatingSupply, "Too many LP tokens taken (bound by xIn)");
     } else {
-        const yLhs = lpOut * yLiquidity;
-        const yRhs = yLiquidityAdded * lpCirculatingSupply;
-        assert(yLhs <= yRhs, "Too many LP tokens taken (bound by yIn)");
+        assert(lpOut * yLiquidity <= yLiquidityAdded * lpCirculatingSupply, "Too many LP tokens taken (bound by yIn)");
     }
 
-    // send lp tokens to recipient (shielded)
+    // Mint LP tokens
     lpCirculatingSupply = lpCirculatingSupply + disclose(lpOut) as Uint<128>;
     doShieldedMint(getLPTokenName(), lpOut, recipient);
 
-    // Update liquidity (faucet mode - no actual receive needed)
+    const contractAddress = getShieldedContractAddress();
+
+    // Spend old X pool coin, receive new (old+added) X coin
     xLiquidity = xLiquidity + xLiquidityAdded as Uint<128>;
+    createZswapInput(xCoin);
+    const newXCoin = ShieldedCoinInfo {
+        pad(32, ""),
+        getXTokenColor(),
+        xLiquidity
+    };
+    receiveShielded(newXCoin);
+    coins.insertCoin(0, newXCoin, contractAddress);
+
+    // Spend old Y pool coin, receive new (old+added) Y coin
     yLiquidity = yLiquidity + yLiquidityAdded as Uint<128>;
+    createZswapInput(yCoin);
+    const newYCoin = ShieldedCoinInfo {
+        pad(32, ""),
+        getYTokenColor(),
+        yLiquidity
+    };
+    receiveShielded(newYCoin);
+    coins.insertCoin(1, newYCoin, contractAddress);
 }
 
+// Remove liquidity — burn LP tokens, receive X + Y back.
+// Spend old pool coins, send portions to user, keep remainder in contract.
 export circuit removeLiquidity(
     lpIn: Uint<64>,
     xOut: Uint<64>,
     yOut: Uint<64>,
-    recipient: Either<ZswapCoinPublicKey, ContractAddress>
+    recipient: Either<ZswapCoinPublicKey, ContractAddress>,
+    nonce: Bytes<32>
 ): [] {
-    const xLhs = xOut * lpCirculatingSupply;
-    const xRhs = lpIn * xLiquidity;
-    assert(xLhs <= xRhs, "Too many X tokens taken");
-    
-    const yLhs = yOut * lpCirculatingSupply;
-    const yRhs = lpIn * yLiquidity;
-    assert(yLhs <= yRhs, "Too many Y tokens taken");
+    // Get pool coins from ledger storage
+    const xCoin = coins.get(0 as Uint<8>);
+    const yCoin = coins.get(1 as Uint<8>);
 
-    // Update LP supply (faucet mode)
+    assert(xOut * lpCirculatingSupply <= lpIn * xLiquidity, "Too many X tokens taken");
+    assert(yOut * lpCirculatingSupply <= lpIn * yLiquidity, "Too many Y tokens taken");
+
+    // Update LP supply (user must send LP tokens — wallet balanceTx handles it)
     lpCirculatingSupply = lpCirculatingSupply - disclose(lpIn);
 
-    // send x tokens to recipient (shielded)
+    const contractAddress = getShieldedContractAddress();
+
+    // Spend old X pool coin
     xLiquidity = xLiquidity - disclose(xOut);
-    doShieldedMint(getXTokenName(), xOut, recipient);
+    createZswapInput(xCoin);
+    // Send X to user
+    createZswapOutput(
+        ShieldedCoinInfo {
+            disclose(nonce),
+            getXTokenColor(),
+            disclose(xOut)
+        },
+        disclose(recipient)
+    );
+    // Keep remaining X in contract
+    const newXCoin = ShieldedCoinInfo {
+        pad(32, ""),
+        getXTokenColor(),
+        xLiquidity + xRewards as Uint<128>
+    };
+    receiveShielded(newXCoin);
+    coins.insertCoin(0, newXCoin, contractAddress);
 
-    // send y tokens to recipient (shielded)
+    // Spend old Y pool coin
     yLiquidity = yLiquidity - disclose(yOut);
-    doShieldedMint(getYTokenName(), yOut, recipient);
+    createZswapInput(yCoin);
+    // Send Y to user
+    createZswapOutput(
+        ShieldedCoinInfo {
+            disclose(nonce),
+            getYTokenColor(),
+            disclose(yOut)
+        },
+        disclose(recipient)
+    );
+    // Keep remaining Y in contract
+    const newYCoin = ShieldedCoinInfo {
+        pad(32, ""),
+        getYTokenColor(),
+        yLiquidity
+    };
+    receiveShielded(newYCoin);
+    coins.insertCoin(1, newYCoin, contractAddress);
 }
 
+// ============ SWAP FUNCTIONS ============
+
+// Swap X tokens for Y tokens.
+// Contract computes yOut on-chain using constant product formula:
+//   xInAfterFee = xIn * (10000 - feeBps) / 10000
+//   yOut = yLiquidity * xInAfterFee / (xLiquidity + xInAfterFee)
+// User only provides xIn and minYOut for slippage protection.
 export circuit swapXToY(
+    xPoolCoin: QualifiedShieldedCoinInfo,
+    yPoolCoin: QualifiedShieldedCoinInfo,
     xIn: Uint<64>,
-    xFee: Uint<64>,
-    yOut: Uint<64>,
-    recipient: Either<ZswapCoinPublicKey, ContractAddress>
+    minYOut: Uint<64>,
+    recipient: Either<ZswapCoinPublicKey, ContractAddress>,
+    nonce: Bytes<32>
 ): [] {
-    assert(xFee * 10000 >= xIn * feeBps, "Fee too low");
+    // Calculate fee and xInAfterFee using division
+    // xInAfterFee = xIn * (10000 - feeBps) / 10000
+    const xIn128 = disclose(xIn) as Uint<128>;
+    const feeMultiplier = (10000 - feeBps) as Uint<128>;
+    const xInScaled = (xIn128 as Field) * (feeMultiplier as Field);
+    const xInAfterFee = disclose(div(xInScaled as Uint<128>, 10000 as Uint<128>));
+    const xFee = xIn128 - xInAfterFee;
+
+    // Calculate yOut using constant product formula
+    // yOut = yLiquidity * xInAfterFee / (xLiquidity + xInAfterFee)
+    const numeratorField = (yLiquidity as Field) * (xInAfterFee as Field);
+    const denominator = (xLiquidity + xInAfterFee) as Uint<128>;
+    const yOut128 = disclose(div(numeratorField as Uint<128>, denominator));
+    
+    // Slippage protection
+    assert(yOut128 >= disclose(minYOut) as Uint<128>, "Slippage: yOut < minYOut");
 
     const initialK = calcK(xLiquidity, yLiquidity);
+    const contractAddress = getShieldedContractAddress();
 
-    // Update liquidity (faucet mode)
-    xRewards = xRewards + disclose(xFee) as Uint<128>;
-    xLiquidity = xLiquidity + disclose(xIn - xFee) as Uint<128>;
+    // User sends xIn to pool => wallet's balanceTx auto-spends user's X coin
+    // Pool receives: xInAfterFee goes to liquidity, xFee goes to rewards
+    xRewards = (xRewards + xFee) as Uint<128>;
+    xLiquidity = (xLiquidity + xInAfterFee) as Uint<128>;
 
-    // send y tokens to recipient (shielded)
-    yLiquidity = yLiquidity - disclose(yOut);
-    doShieldedMint(getYTokenName(), yOut, recipient);
+    // Spend old X pool coin, receive new X pool coin (includes liquidity + rewards)
+    createZswapInput(xPoolCoin);
+    const newXCoin = ShieldedCoinInfo {
+        pad(32, ""),
+        getXTokenColor(),
+        (xLiquidity + xRewards) as Uint<128>
+    };
+    receiveShielded(newXCoin);
+    coins.insertCoin(0, newXCoin, contractAddress);
+
+    // Spend old Y pool coin, send yOut to user, keep remainder in contract
+    yLiquidity = yLiquidity - yOut128;
+    createZswapInput(yPoolCoin);
+    createZswapOutput(
+        ShieldedCoinInfo {
+            disclose(nonce),
+            getYTokenColor(),
+            yOut128
+        },
+        disclose(recipient)
+    );
+    const newYCoin = ShieldedCoinInfo {
+        pad(32, ""),
+        getYTokenColor(),
+        yLiquidity
+    };
+    receiveShielded(newYCoin);
+    coins.insertCoin(1, newYCoin, contractAddress);
 
     const finalK = calcK(xLiquidity, yLiquidity);
-
     assert(finalK >= initialK, "Final k smaller than initial k");
 }
 
+// Swap Y tokens for X tokens.
+// Contract computes xOut on-chain using constant product formula.
+// Fee is charged on X output: user receives xOut after fee deduction.
 export circuit swapYToX(
+    xPoolCoin: QualifiedShieldedCoinInfo,
+    yPoolCoin: QualifiedShieldedCoinInfo,
     yIn: Uint<64>,
-    xFee: Uint<64>,
-    xOut: Uint<64>,
-    recipient: Either<ZswapCoinPublicKey, ContractAddress>
+    minXOut: Uint<64>,
+    recipient: Either<ZswapCoinPublicKey, ContractAddress>,
+    nonce: Bytes<32>
 ): [] {
-    assert(xFee * (10000 - feeBps) >= xOut * feeBps, "Fee too low");
+    // Calculate xOut before fee using constant product formula
+    // xOutGross = xLiquidity * yIn / (yLiquidity + yIn)
+    const yIn128 = disclose(yIn) as Uint<128>;
+    const numeratorField = (xLiquidity as Field) * (yIn128 as Field);
+    const denominator = (yLiquidity + yIn128) as Uint<128>;
+    const xOutGross = disclose(div(numeratorField as Uint<128>, denominator));
+
+    // Apply fee: xOut = xOutGross * (10000 - feeBps) / 10000
+    const feeMultiplier = (10000 - feeBps) as Uint<128>;
+    const xOutScaled = (xOutGross as Field) * (feeMultiplier as Field);
+    const xOut128 = disclose(div(xOutScaled as Uint<128>, 10000 as Uint<128>));
+    const xFee = xOutGross - xOut128;
+
+    // Slippage protection
+    assert(xOut128 >= disclose(minXOut) as Uint<128>, "Slippage: xOut < minXOut");
 
     const initialK = calcK(xLiquidity, yLiquidity);
+    const contractAddress = getShieldedContractAddress();
 
-    // send x tokens to recipient (shielded)
-    xRewards = xRewards + disclose(xFee) as Uint<128>;
-    xLiquidity = xLiquidity - disclose(xOut + xFee);
-    doShieldedMint(getXTokenName(), xOut, recipient);
+    // User sends yIn to pool => wallet's balanceTx auto-spends user's Y coin
+    yLiquidity = (yLiquidity + yIn128) as Uint<128>;
 
-    // Update y liquidity (faucet mode)
-    yLiquidity = yLiquidity + disclose(yIn) as Uint<128>;
+    // Spend old Y pool coin, receive new Y pool coin
+    createZswapInput(yPoolCoin);
+    const newYCoin = ShieldedCoinInfo {
+        pad(32, ""),
+        getYTokenColor(),
+        yLiquidity
+    };
+    receiveShielded(newYCoin);
+    coins.insertCoin(1, newYCoin, contractAddress);
+
+    // Pool sends xOut to user (fee stays in xLiquidity as implicit value)
+    // xRewards captures the explicit fee portion
+    xRewards = (xRewards + xFee) as Uint<128>;
+    xLiquidity = (xLiquidity - xOut128) as Uint<128>;
+
+    // Spend old X pool coin, send xOut to user, keep remainder in contract
+    createZswapInput(xPoolCoin);
+    createZswapOutput(
+        ShieldedCoinInfo {
+            disclose(nonce),
+            getXTokenColor(),
+            xOut128
+        },
+        disclose(recipient)
+    );
+    const newXCoin = ShieldedCoinInfo {
+        pad(32, ""),
+        getXTokenColor(),
+        (xLiquidity + xRewards) as Uint<128>
+    };
+    receiveShielded(newXCoin);
+    coins.insertCoin(0, newXCoin, contractAddress);
 
     const finalK = calcK(xLiquidity, yLiquidity);
-
     assert(finalK >= initialK, "Final k smaller than initial k");
 }
+
+// ============ HELPERS ============
 
 circuit getLPTokenName(): Bytes<32> {
     return pad(32, "Pulse LP Token");
@@ -208,6 +400,14 @@ circuit getXTokenName(): Bytes<32> {
 
 circuit getYTokenName(): Bytes<32> {
     return pad(32, "Test token Y");
+}
+
+circuit getXTokenColor(): Bytes<32> {
+    return tokenType(getXTokenName(), kernel.self());
+}
+
+circuit getYTokenColor(): Bytes<32> {
+    return tokenType(getYTokenName(), kernel.self());
 }
 
 circuit calcK(x: Uint<128>, y: Uint<128>): Uint<248> {

@@ -311,12 +311,10 @@ const mainLoop = async (providers: FaucetAMMProviders, walletCtx: api.WalletCont
       case '6':
         try {
           const xIn = await rli.question('Enter X tokens to swap: ');
-          const xFee = await rli.question('Enter fee amount (X tokens): ');
-          const yOut = await rli.question('Enter Y tokens to receive: ');
           await api.withStatus('Swapping X to Y', () =>
-            api.swapXToY(providers, mintContract, BigInt(xIn), BigInt(xFee), BigInt(yOut), walletCtx.wallet)
+            api.swapXToY(providers, mintContract, BigInt(xIn), walletCtx.wallet)
           );
-          console.log(`  ✓ Swapped ${xIn} X -> ${yOut} Y (fee: ${xFee})\n`);
+          console.log(`  ✓ Swapped ${xIn} X to Y (contract auto-calculated output)\n`);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           console.log(`  ✗ Swap X to Y failed: ${msg}\n`);
@@ -325,12 +323,10 @@ const mainLoop = async (providers: FaucetAMMProviders, walletCtx: api.WalletCont
       case '7':
         try {
           const yIn = await rli.question('Enter Y tokens to swap: ');
-          const xFee = await rli.question('Enter fee amount (X tokens): ');
-          const xOut = await rli.question('Enter X tokens to receive: ');
           await api.withStatus('Swapping Y to X', () =>
-            api.swapYToX(providers, mintContract, BigInt(yIn), BigInt(xFee), BigInt(xOut), walletCtx.wallet)
+            api.swapYToX(providers, mintContract, BigInt(yIn), walletCtx.wallet)
           );
-          console.log(`  ✓ Swapped ${yIn} Y -> ${xOut} X (fee: ${xFee})\n`);
+          console.log(`  ✓ Swapped ${yIn} Y to X (contract auto-calculated output)\n`);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           console.log(`  ✗ Swap Y to X failed: ${msg}\n`);
